@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>ru</string>
+    <key>CFBundleExecutable</key>
+    <string>NotchHub</string>
+    <key>CFBundleIdentifier</key>
+    <string>name.notchhub.NotchHub</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>NotchHub</string>
+    <key>CFBundleDisplayName</key>
+    <string>NotchHub</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>NotchHub показывает ближайшие события прямо в чёлке.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>NotchHub показывает ближайшие события прямо в чёлке.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Резервный способ читать и переключать трек в Музыке и Spotify, если системный MediaRemote недоступен.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>NotchHub</string>
+</dict>
+</plist>
