@@ -34,9 +34,28 @@
     <string>NotchHub показывает ближайшие события прямо в чёлке.</string>
     <key>NSCalendarsUsageDescription</key>
     <string>NotchHub показывает ближайшие события прямо в чёлке.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>NotchHub забирает свежие снимки экрана на полку.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>NotchHub забирает свежие снимки экрана на полку, если они сохраняются сюда.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>NotchHub забирает свежие снимки экрана на полку, если они сохраняются сюда.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Резервный способ читать и переключать трек в Музыке и Spotify, если системный MediaRemote недоступен.</string>
     <key>NSHumanReadableCopyright</key>
     <string>NotchHub</string>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>name.notchhub.snippet-row</string>
+            <key>UTTypeDescription</key>
+            <string>Строка заготовки NotchHub</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

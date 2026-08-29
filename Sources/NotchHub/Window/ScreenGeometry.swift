@@ -48,28 +48,35 @@ enum ScreenGeometry {
     static func geometry(of screen: NSScreen) -> NotchGeometry {
         let menuBar = menuBarHeight(of: screen)
         let builtin = isBuiltin(screen)
-        let safeTop = screen.safeAreaInsets.top
 
-        if safeTop > 0,
-           let left = screen.auxiliaryTopLeftArea,
-           let right = screen.auxiliaryTopRightArea {
-            // Настоящая чёлка: ширина = экран минус два «плеча» рядом с вырезом.
-            let width = screen.frame.width - left.width - right.width + widthPadding
-            let height = max(safeTop, minNotchHeight)
-            return NotchGeometry(size: CGSize(width: width, height: height),
-                                 isRealNotch: true,
-                                 isBuiltin: builtin,
-                                 screenFrame: screen.frame,
-                                 menuBarHeight: menuBar)
-        }
+        // `safeAreaInsets` и auxiliary-области пришли в macOS 12. На Big Sur их
+        // отсутствие ничего не отнимает: вырез появился только у MacBook Pro 2021,
+        // а те с завода идут не ниже Monterey — значит, чёлки там физически нет
+        // и путь всегда один, псевдо-чёлка ниже.
+        if #available(macOS 12.0, *) {
+            let safeTop = screen.safeAreaInsets.top
 
-        if safeTop > 0 {
-            // Чёлка есть, но auxiliary-области недоступны — считаем по безопасной зоне.
-            return NotchGeometry(size: CGSize(width: pseudoNotchWidth, height: max(safeTop, minNotchHeight)),
-                                 isRealNotch: true,
-                                 isBuiltin: builtin,
-                                 screenFrame: screen.frame,
-                                 menuBarHeight: menuBar)
+            if safeTop > 0,
+               let left = screen.auxiliaryTopLeftArea,
+               let right = screen.auxiliaryTopRightArea {
+                // Настоящая чёлка: ширина = экран минус два «плеча» рядом с вырезом.
+                let width = screen.frame.width - left.width - right.width + widthPadding
+                let height = max(safeTop, minNotchHeight)
+                return NotchGeometry(size: CGSize(width: width, height: height),
+                                     isRealNotch: true,
+                                     isBuiltin: builtin,
+                                     screenFrame: screen.frame,
+                                     menuBarHeight: menuBar)
+            }
+
+            if safeTop > 0 {
+                // Чёлка есть, но auxiliary-области недоступны — считаем по безопасной зоне.
+                return NotchGeometry(size: CGSize(width: pseudoNotchWidth, height: max(safeTop, minNotchHeight)),
+                                     isRealNotch: true,
+                                     isBuiltin: builtin,
+                                     screenFrame: screen.frame,
+                                     menuBarHeight: menuBar)
+            }
         }
 
         // Экран без выреза — рисуем псевдо-чёлку высотой в строку меню.

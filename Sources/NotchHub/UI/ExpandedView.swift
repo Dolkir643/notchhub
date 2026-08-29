@@ -34,22 +34,22 @@ struct TabColumn: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        VStack(spacing: 4) {
+        // Ни распорки, ни вертикальных отступов: колонку по высоте центрует
+        // сам HStack панели. С распоркой внизу иконки прижимались к верху.
+        VStack(spacing: Theme.tabSpacing) {
             ForEach(NotchTab.available) { tab in
                 TabButton(tab: tab, selected: state.selectedTab == tab, badge: badge(for: tab)) {
                     withAnimation(Theme.quick) { state.selectedTab = tab }
                 }
             }
-            Spacer(minLength: 0)
         }
-        .padding(.vertical, 8)
         .frame(width: Theme.sidebarWidth)
     }
 
     private func badge(for tab: NotchTab) -> Int {
         switch tab {
         case .shelf: return state.shelf.items.count
-        case .clipboard: return 0
+        case .clipboard: return state.clipboard.items.count
         default: return 0
         }
     }
@@ -69,18 +69,22 @@ private struct TabButton: View {
                     .fill(selected ? Color.white.opacity(0.16) : (hovering ? Color.white.opacity(0.08) : .clear))
                 Image(systemName: tab.icon)
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(selected ? .white : .white.opacity(0.6))
+                    .hubForeground(selected ? .white : .white.opacity(0.6))
+                    // Символы разной ширины (нотка — 8 pt, шестерёнка — 16 pt)
+                    // сами по себе центруются по своей рамке, а не по оптическому
+                    // центру ряда. Общая рамка выравнивает их между собой.
+                    .frame(width: 18, height: 18)
                 if badge > 0 {
                     Text("\(min(badge, 99))")
                         .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.black)
+                        .hubForeground(.black)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
                         .background(Capsule().fill(Theme.accent))
                         .offset(x: 12, y: -10)
                 }
             }
-            .frame(width: 36, height: 32)
+            .frame(width: Theme.tabButton, height: Theme.tabButton)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

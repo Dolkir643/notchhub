@@ -6,7 +6,7 @@ enum Fmt {
         guard seconds.isFinite, seconds >= 0 else { return "--:--" }
         let total = Int(seconds.rounded())
         let s = total % 60, m = (total / 60) % 60, h = total / 3600
-        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 
     static let bytes: ByteCountFormatter = {
@@ -47,11 +47,16 @@ enum Fmt {
         return "\(day) · \(hm(start))–\(hm(end))"
     }
 
-    /// «2 мин назад», «вчера»
+    /// «только что», «2 мин. назад», «1 дн. назад».
+    ///
+    /// Стиль `.abbreviated` по-русски выдаёт «-9 с» вместо «9 сек. назад» —
+    /// минус вместо слова, поэтому берём `.short`.
     static func relative(_ date: Date) -> String {
+        let elapsed = Date().timeIntervalSince(date)
+        if elapsed >= 0, elapsed < 15 { return "только что" }
         let f = RelativeDateTimeFormatter()
         f.locale = ru
-        f.unitsStyle = .abbreviated
+        f.unitsStyle = .short
         return f.localizedString(for: date, relativeTo: Date())
     }
 }

@@ -23,8 +23,10 @@ import Combine
     /// Следить за буфером обмена.
     @Published var clipboardEnabled: Bool = true { didSet { persist(\.clipboardEnabled, "clipboardEnabled", clipboardEnabled) } }
 
-    /// Задержка перед раскрытием при наведении, сек.
-    @Published var hoverOpenDelay: Double = 0.3 { didSet { persist(\.hoverOpenDelay, "hoverOpenDelay", hoverOpenDelay) } }
+    /// Задержка перед раскрытием при наведении, сек. 0 — мгновенно.
+    /// Короткая по умолчанию: промежуточной карточки больше нет, и всё это время
+    /// островок молчит — длинная пауза читалась бы как «не реагирует».
+    @Published var hoverOpenDelay: Double = 0.12 { didSet { persist(\.hoverOpenDelay, "hoverOpenDelay", hoverOpenDelay) } }
 
     /// Хаптик при попадании в чёлку.
     @Published var hapticsEnabled: Bool = true { didSet { persist(\.hapticsEnabled, "hapticsEnabled", hapticsEnabled) } }

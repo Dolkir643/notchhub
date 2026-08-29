@@ -84,6 +84,17 @@ import SwiftUI
                       height: height)
     }
 
+    /// В панели правят текст: поиск, заготовку или поле переводчика.
+    /// Пока идёт ввод, уход курсора не должен захлопывать панель — иначе
+    /// строка обрывается на полуслове, стоит потянуться за чашкой.
+    var isEditingText: Bool {
+        entries.contains { entry in
+            guard entry.panel.isKeyWindow, let responder = entry.panel.firstResponder else { return false }
+            if let text = responder as? NSTextView { return text.isFieldEditor || text.isEditable }
+            return responder is NSTextField
+        }
+    }
+
     /// Разрешить панели принимать клавиатурный ввод (только в раскрытом виде).
     func setKeyInputAllowed(_ allowed: Bool) {
         for e in entries { e.panel.acceptsKeyInput = allowed }
@@ -131,29 +142,39 @@ import SwiftUI
             let h = geo.size.height + Theme.panelHeight + 12
             return CGRect(x: frame.midX - w / 2, y: frame.maxY - h, width: w, height: h)
         }
-        if state.isHovering {
-            let w = max(geo.size.width, Theme.compactWidth) + 12
-            let h = geo.size.height + Theme.compactHeight + 10
-            return CGRect(x: frame.midX - w / 2, y: frame.maxY - h, width: w, height: h)
-        }
         return CGRect(x: frame.midX - geo.size.width / 2,
                       y: frame.maxY - geo.size.height,
                       width: geo.size.width,
                       height: geo.size.height)
     }
 
+    /// Попадание курсора в зону — с включённой верхней кромкой.
+    ///
+    /// Курсор, упёртый в самый верх экрана, имеет y ровно `screen.frame.maxY`,
+    /// а `CGRect.contains` верхнюю кромку своей не считает. Из-за этого островок
+    /// не раскрывался, пока мышь не опустят на точку ниже — то есть ровно в том
+    /// положении, куда курсор приходит естественнее всего.
+    private func contains(_ rect: CGRect, _ point: CGPoint) -> Bool {
+        point.x >= rect.minX && point.x <= rect.maxX
+            && point.y >= rect.minY && point.y <= rect.maxY
+    }
+
     /// Ключ экрана, в чью активную зону попал курсор, либо nil.
     private func zoneKey(for point: CGPoint) -> String? {
-        for e in entries where activeRect(for: e.geometry).contains(point) {
+        for e in entries where contains(activeRect(for: e.geometry), point) {
             return NSStringFromRect(e.geometry.screenFrame)
         }
         return nil
     }
 
     private func updateHover() {
-        let key = zoneKey(for: NSEvent.mouseLocation)
+        let point = NSEvent.mouseLocation
+        let key = zoneKey(for: point)
         guard key != lastInsideKey else { return }
         lastInsideKey = key
+        // Уровень debug: в журнал попадает, только когда за ним следят
+        // (`log stream --level debug`), в обычной работе не стоит ничего.
+        Log.window.debug("зона \(key == nil ? "покинута" : "занята", privacy: .public) в точке \(point.x, privacy: .public),\(point.y, privacy: .public)")
         if key != nil {
             AppState.shared.hoverBegan()
         } else {

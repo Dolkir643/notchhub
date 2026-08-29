@@ -3,11 +3,47 @@ import SwiftUI
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
 
+    private var signalSources: [DispatchSourceSignal] = []
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
+        installSignalHandlers()
         AppState.shared.startServices()
         NotchWindowController.shared.start()
-        Log.app.info("NotchHub запущен")
+        Log.app.info("NotchHub запущен из \(Bundle.main.bundlePath, privacy: .public)")
+        Log.app.info("автозапуск: \(String(describing: LoginItem.state), privacy: .public)")
+        startDemoIfRequested()
+    }
+
+    // ВРЕМЕННОЕ: держит панель раскрытой для снятия скриншотов при доводке вида.
+    private func startDemoIfRequested() {
+        guard let name = ProcessInfo.processInfo.environment["NOTCHHUB_DEMO"],
+              let tab = NotchTab(rawValue: name) else { return }
+        Task { @MainActor in
+            while !Task.isCancelled {
+                AppState.shared.expand(to: tab)
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+        }
+    }
+
+    /// `pkill NotchHub` и прочий SIGTERM убивают процесс мимо
+    /// `applicationWillTerminate`, а вместе с ним осиротел бы `perl`-поток адаптера.
+    /// Перехватываем сигнал и выходим по-человечески.
+    private func installSignalHandlers() {
+        for number in [SIGTERM, SIGINT, SIGHUP] {
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
+            source.setEventHandler {
+                MainActor.assumeIsolated {
+                    Log.app.notice("получен сигнал \(number, privacy: .public), выходим")
+                    AppState.shared.stopServices()
+                    NSApp.terminate(nil)
+                }
+            }
+            source.resume()
+            signalSources.append(source)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
