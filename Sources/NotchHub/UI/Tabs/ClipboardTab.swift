@@ -235,6 +235,10 @@ private struct ClipRow: View {
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .strokeBorder(.white.opacity(0.12), lineWidth: 1)
                 )
+                // Та же ловушка, что была у обложки в «Музыке»: `aspectRatio(.fill)`
+                // растягивает картинку за рамку, `clipShape` прячет вылезшее лишь
+                // на вид, а зона нажатия остаётся во всю ширину снимка.
+                .allowsHitTesting(false)
         case .url(let u):
             Image(systemName: u.isFileURL ? "doc" : "link")
                 .font(.system(size: 11, weight: .medium))

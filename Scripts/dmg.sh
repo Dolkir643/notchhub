@@ -24,7 +24,22 @@ say "Архитектуры адаптера:   $(lipo -archs "$APP/Contents/Fra
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")"
-DMG="$ROOT/build/NotchHub-$VERSION.dmg"
+# Имя, подпись тома и оговорки в записке зависят от того, под какую систему собрали.
+if [ "${MACOS11:-0}" = "1" ]; then
+    DMG="$ROOT/build/NotchHub-$VERSION-macOS11.dmg"
+    VOLNAME="NotchHub $VERSION (macOS 11)"
+    LEGACY_NOTE="
+ОСОБЕННОСТИ СБОРКИ ДЛЯ СТАРЫХ СИСТЕМ
+    • вкладки «Переводчик» нет — системный переводчик появился в macOS 15;
+    • на macOS 11–12 автозапуск делается своим LaunchAgent и не показывается
+      в «Объектах входа»;
+    • на macOS 11 нет автофокуса в полях ввода — кликните в поле мышью.
+"
+else
+    DMG="$ROOT/build/NotchHub-$VERSION.dmg"
+    VOLNAME="NotchHub $VERSION"
+    LEGACY_NOTE=""
+fi
 
 # 2. Содержимое образа --------------------------------------------------------
 say "Готовлю содержимое"
@@ -36,7 +51,7 @@ ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/Прочти меня.txt" <<EOF
 NotchHub $VERSION ($BUILD)
 Хаб в чёлке: музыка, полка для файлов, история буфера, заготовки,
-календарь и переводчик. Требуется macOS 14 или новее.
+календарь и переводчик. Требуется macOS $(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist") или новее.
 
 УСТАНОВКА
 1. Перетащи NotchHub в папку «Программы» (ярлык рядом).
@@ -65,13 +80,14 @@ NotchHub $VERSION ($BUILD)
 ЧТО УМЕЕТ МУЗЫКА
     Показывает и переключает то, что играет: Яндекс Музыка, Spotify,
     «Музыка», YouTube в браузере — всё, что сообщает системе название трека.
+$LEGACY_NOTE
 EOF
 
 # 3. Образ --------------------------------------------------------------------
 say "Собираю $DMG"
 rm -f "$DMG"
 hdiutil create \
-    -volname "NotchHub $VERSION" \
+    -volname "$VOLNAME" \
     -srcfolder "$STAGE" \
     -fs HFS+ \
     -format UDZO \

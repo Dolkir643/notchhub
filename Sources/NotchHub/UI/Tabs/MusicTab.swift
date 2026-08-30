@@ -151,6 +151,13 @@ struct MusicTab: View {
         .frame(width: 150, height: 150)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
+        // Обложка ничего не нажимает — и не должна мешать нажимать другим.
+        // `aspectRatio(.fill)` растягивает картинку ЗА рамку: кадр 16:9 в квадрате
+        // 150×150 вылезает на 58 pt в каждую сторону. `clipShape` прячет это лишь
+        // на вид, зона нажатия остаётся во всю ширину картинки — и невидимый край
+        // накрывал колонку слева, из-за чего «Полка», «Буфер», «Заготовки»
+        // и «Календарь» переставали нажиматься, пока играет широкая обложка.
+        .allowsHitTesting(false)
     }
 
     // MARK: — полоса перемотки

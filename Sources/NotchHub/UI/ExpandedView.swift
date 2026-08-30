@@ -7,6 +7,11 @@ struct ExpandedView: View {
     var body: some View {
         HStack(spacing: 0) {
             TabColumn()
+                // Колонка всегда выигрывает нажатие у содержимого вкладки.
+                // В HStack соседи лежат в порядке объявления, и содержимое,
+                // объявленное позже, оказывается сверху: любая картинка,
+                // вылезшая за свою рамку, начинала бы перехватывать клики.
+                .zIndex(1)
             Divider().overlay(Color.white.opacity(0.08))
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
