@@ -100,7 +100,4 @@ MACOS11=1 ./Scripts/dmg.sh      # образ для macOS 11+
 
 NotchHub — MIT, см. [LICENSE](LICENSE).
 
-В `Vendor/mediaremote-adapter` лежит копия
-[ungive/mediaremote-adapter](https://github.com/ungive/mediaremote-adapter)
-под лицензией BSD 3-Clause, © Jonas van den Berg and contributors —
-текст лицензии сохранён рядом с кодом.
+Сторонний код и его лицензии — в [THIRD-PARTY.md](THIRD-PARTY.md).
