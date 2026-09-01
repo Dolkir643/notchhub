@@ -120,11 +120,17 @@ struct MediaAdapterPaths: Sendable {
 
     private static func fromRepository(_ root: String) -> MediaAdapterPaths? {
         let script = root + "/Vendor/mediaremote-adapter/bin/mediaremote-adapter.pl"
-        guard exists(script),
-              let framework = validFramework(URL(fileURLWithPath: root + "/build/adapter/MediaRemoteAdapter.framework"))
-        else { return nil }
-        let client = root + "/build/adapter/MediaRemoteAdapterTestClient"
-        return MediaAdapterPaths(script: script, framework: framework, testClient: exists(client) ? client : nil)
+        guard exists(script) else { return nil }
+        // build.sh кладёт адаптер в build/adapter-<минимальная macOS>;
+        // build/adapter — путь старых сборок, оставлен на всякий случай.
+        for dir in ["adapter-14.0", "adapter-11.0", "adapter"] {
+            let base = root + "/build/" + dir
+            guard let framework = validFramework(URL(fileURLWithPath: base + "/MediaRemoteAdapter.framework"))
+            else { continue }
+            let client = base + "/MediaRemoteAdapterTestClient"
+            return MediaAdapterPaths(script: script, framework: framework, testClient: exists(client) ? client : nil)
+        }
+        return nil
     }
 
     private static func developmentRoots() -> [String] {

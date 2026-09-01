@@ -107,6 +107,11 @@ if otool -L "$EXE" | grep -q "@rpath/libswift_Concurrency.dylib"; then
     codesign --force --sign - --timestamp=none "$APP/Contents/Frameworks/libswift_Concurrency.dylib" >/dev/null 2>&1
 fi
 
+# 3.9. Срезать отладочную карту линкера: в ней абсолютные пути сборки
+# с именем пользователя (N_OSO/N_SO), и без strip они уезжают в раздаваемый
+# образ. Предупреждение про подпись глушим — подписываем следующим шагом.
+strip -S "$APP/Contents/MacOS/NotchHub" 2>/dev/null
+
 # 4. Подпись ------------------------------------------------------------------
 say "Подписываю ad-hoc"
 codesign --force --sign - --timestamp=none "$APP/Contents/Frameworks/MediaRemoteAdapter.framework" >/dev/null 2>&1

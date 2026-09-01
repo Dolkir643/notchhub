@@ -19,7 +19,7 @@
    `clipboardEnabled`, `hoverOpenDelay`, `hapticsEnabled`, `builtinScreenOnly`,
    `openOnHover`.
 5. Весь UI и все строки — **по-русски**. Тексты короткие: панель узкая
-   (контент ≈ 574×212 pt после колонки вкладок и отступов).
+   (контент ≈ 574×248 pt после колонки вкладок и отступов).
 6. Всё в главном акторе: сервисы — `@MainActor final class … : ObservableObject`.
    Фоновую работу выносить в `Task.detached` / `DispatchQueue`, а результат
    возвращать через `await MainActor.run` или `Task { @MainActor in }`.
@@ -30,7 +30,7 @@
 
 | Модуль      | Файлы |
 |-------------|-------|
-| music       | `Services/MediaService.swift`, `UI/Tabs/MusicTab.swift`, `UI/CompactView.swift`, новые `Services/Media*.swift` |
+| music       | `Services/MediaService.swift`, `UI/Tabs/MusicTab.swift`, `UI/MediaControls.swift`, новые `Services/Media*.swift` |
 | shelf       | `Services/ShelfService.swift`, `UI/Tabs/ShelfTab.swift`, новые `Services/Shelf*.swift`, `UI/Shelf*.swift` |
 | clipboard   | `Services/ClipboardService.swift`, `UI/Tabs/ClipboardTab.swift` |
 | snippets    | `Services/SnippetStore.swift`, `UI/Tabs/SnippetsTab.swift` |
@@ -51,7 +51,7 @@ state.collapse(immediate:)   // схлопнуть
 state.flash("Скопировано")   // всплывающее подтверждение на 1,1 с
 
 // Оформление (UI/Theme.swift):
-Theme.panelWidth = 640, Theme.panelHeight = 232, Theme.sidebarWidth = 52
+Theme.panelWidth = 640, Theme.panelHeight = 268, Theme.sidebarWidth = 52
 Theme.accent, Theme.panelFill, Theme.cardFill, Theme.cardStroke, Theme.secondaryText
 Theme.openSpring / closeSpring / quick        // пружины
 .hubCard(12)                                  // модификатор карточки
@@ -79,7 +79,8 @@ NotchHub.app/Contents/Resources/MediaRemoteAdapterTestClient
 ```
 Исходник адаптера лежит в `Vendor/mediaremote-adapter`, сборку делает
 `Scripts/build.sh` (cmake). При запуске не из бандла искать их в
-`<repo>/build/adapter` и `<repo>/Vendor/mediaremote-adapter/bin`.
+`<repo>/build/adapter-14.0` (либо `adapter-11.0` — по минимальной системе
+сборки) и `<repo>/Vendor/mediaremote-adapter/bin`.
 
 ## Как собирать и проверять
 
@@ -90,6 +91,5 @@ swift build                    # быстрый прогон компилято�
 ./Scripts/run.sh               # пересобрать и перезапустить
 ```
 
-Машина: macOS 26.5, MacBook Pro 16,2, **Intel, чёлки нет** — рабочий путь
-это псевдо-чёлка. Подписных сертификатов нет, подпись ad-hoc: доступы TCC
+Машина автора — Intel-мак **без выреза**, рабочий путь — псевдо-чёлка. Подписных сертификатов нет, подпись ad-hoc: доступы TCC
 (календарь, Automation) придётся выдавать заново после пересборки.
