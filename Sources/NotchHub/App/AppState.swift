@@ -69,9 +69,22 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
     let calendarService = CalendarService()
     let translate = TranslateService()
 
+    /// Островок спрятан: под ним полноэкранное приложение, и рисовать поверх
+    /// его интерфейса нечего. Вместо островка работает узкая полоска-триггер.
+    var isHidden: Bool {
+        settings.hideInFullScreen && !isExpanded && !fullScreen.coveredScreens.isEmpty
+    }
+
+    /// Курсор подошёл к спрятанной полоске вплотную — показываем язычок-подсказку.
+    @Published private(set) var showsEdgeHint = false
+
+    let fullScreen = FullScreenWatcher.shared
+
     /// Курсор в зоне чёлки. Больше не состояние вида, а только защита
     /// от повторного хаптика и от раскрытия, когда курсор уже ушёл.
     private var isInside = false
+    /// Момент входа курсора в зону — ограничивает ожидание остановки.
+    private var insideSince: Date?
     private var openTask: Task<Void, Never>?
     private var closeTask: Task<Void, Never>?
     private var flashTask: Task<Void, Never>?
@@ -81,7 +94,8 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
         // Панель перерисовывается, когда сервисы меняют своё состояние.
         for object in [media.objectWillChange, shelf.objectWillChange, clipboard.objectWillChange,
                        snippets.objectWillChange, calendarService.objectWillChange,
-                       translate.objectWillChange, settings.objectWillChange] {
+                       translate.objectWillChange, settings.objectWillChange,
+                       fullScreen.objectWillChange] {
             object.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &bag)
         }
     }
@@ -108,11 +122,32 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
         closeTask?.cancel(); closeTask = nil
         guard !isInside else { return }
         isInside = true
+        insideSince = Date()
         Haptics.tap()
+        scheduleOpen()
+    }
 
+    /// Курсор двигается внутри зоны.
+    ///
+    /// В режиме ожидания остановки каждое движение отодвигает раскрытие: рука,
+    /// проносящая курсор мимо, зону не «удерживает». Ограничение сверху не даёт
+    /// панели не открыться вовсе, если курсор чуть дрожит на месте.
+    func hoverMoved() {
+        guard isInside, !isExpanded, settings.waitForStill else { return }
+        if let since = insideSince, Date().timeIntervalSince(since) > Self.stillPatience { return }
+        scheduleOpen()
+    }
+
+    /// Сколько ждать остановки, прежде чем раскрыть на одном лишь удержании.
+    private static let stillPatience: TimeInterval = 1.2
+
+    private func scheduleOpen() {
         guard settings.openOnHover, !isExpanded else { return }
         openTask?.cancel()
-        let delay = settings.hoverOpenDelay
+        // Спрятанную полоску трогают случайнее обычного островка: она у самой
+        // кромки, куда курсор приезжает и мимоходом. Ждём заметно дольше.
+        let base = settings.hoverOpenDelay
+        let delay = isHidden ? max(base, 0.2) + 0.18 : base
         openTask = Task { [weak self] in
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -125,6 +160,7 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
     /// Курсор покинул зону: чёлку в свёрнутом виде, всю панель — в раскрытом.
     func hoverEnded() {
         isInside = false
+        insideSince = nil
         openTask?.cancel(); openTask = nil
         closeTask?.cancel()
         closeTask = Task { [weak self] in
@@ -140,6 +176,12 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    /// Курсор рядом со спрятанной полоской — показать язычок.
+    func setEdgeHint(_ visible: Bool) {
+        guard showsEdgeHint != visible else { return }
+        withAnimation(Theme.quick) { showsEdgeHint = visible }
+    }
+
     func expand(to tab: NotchTab? = nil) {
         openTask?.cancel(); openTask = nil
         closeTask?.cancel(); closeTask = nil
@@ -148,14 +190,19 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
         // Календарь просим ДО анимации: раскрытие и запрос к EventKit
         // не должны конкурировать за главный поток на одном кадре.
         calendarService.refreshIfNeeded()
+        Log.window.debug("раскрытие\(self.isHidden ? " из спрятанного вида" : "", privacy: .public)")
         NotchWindowController.shared.setKeyInputAllowed(true)
-        withAnimation(Theme.openSpring) { isExpanded = true }
+        withAnimation(Theme.openSpring) {
+            isExpanded = true
+            showsEdgeHint = false
+        }
     }
 
     func collapse(immediate: Bool = false) {
         openTask?.cancel(); openTask = nil
         if immediate { closeTask?.cancel(); closeTask = nil }
         guard isExpanded || isDropTargeted else { return }
+        Log.window.debug("схлопывание")
         NotchWindowController.shared.setKeyInputAllowed(false)
         withAnimation(Theme.closeSpring) {
             isExpanded = false

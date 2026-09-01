@@ -16,6 +16,7 @@ import SwiftUI
     private var clickMonitor: Any?
     private var pollTimer: Timer?
     private var lastInsideKey: String?
+    private var lastPoint: CGPoint?
     private var rebuildTask: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
 
@@ -24,6 +25,7 @@ import SwiftUI
     // MARK: — жизненный цикл
 
     func start() {
+        FullScreenWatcher.shared.start()
         rebuild()
 
         let screensChanged: @Sendable (Notification) -> Void = { _ in
@@ -133,6 +135,15 @@ import SwiftUI
         }
     }
 
+    /// Ширина и высота полоски-триггера, заменяющей спрятанный островок.
+    /// Полоска низкая намеренно: у самой кромки курсор оказывается и по делу,
+    /// и проездом, а четыре точки ловят только упёртый в верх экрана курсор.
+    private static let stripHeight: CGFloat = 4
+    private static let stripWidth: CGFloat = 200
+    /// Зона, в которой показывается язычок-подсказка.
+    private static let hintHeight: CGFloat = 44
+    private static let hintWidth: CGFloat = 280
+
     /// Активная зона панели на экране в текущем состоянии.
     private func activeRect(for geo: NotchGeometry) -> CGRect {
         let state = AppState.shared
@@ -142,10 +153,26 @@ import SwiftUI
             let h = geo.size.height + Theme.panelHeight + 12
             return CGRect(x: frame.midX - w / 2, y: frame.maxY - h, width: w, height: h)
         }
+        if state.isHidden, FullScreenWatcher.shared.covers(frame) {
+            return CGRect(x: frame.midX - Self.stripWidth / 2,
+                          y: frame.maxY - Self.stripHeight,
+                          width: Self.stripWidth,
+                          height: Self.stripHeight)
+        }
         return CGRect(x: frame.midX - geo.size.width / 2,
                       y: frame.maxY - geo.size.height,
                       width: geo.size.width,
                       height: geo.size.height)
+    }
+
+    /// Зона подсказки: шире и выше полоски, чтобы язычок успел проявиться,
+    /// пока курсор ещё только подъезжает к кромке.
+    private func hintRect(for geo: NotchGeometry) -> CGRect {
+        let frame = geo.screenFrame
+        return CGRect(x: frame.midX - Self.hintWidth / 2,
+                      y: frame.maxY - Self.hintHeight,
+                      width: Self.hintWidth,
+                      height: Self.hintHeight)
     }
 
     /// Попадание курсора в зону — с включённой верхней кромкой.
@@ -159,6 +186,21 @@ import SwiftUI
             && point.y >= rect.minY && point.y <= rect.maxY
     }
 
+    /// Язычок показываем, только когда островок действительно спрятан:
+    /// в обычном виде подсказывать нечего, островок и так на месте.
+    private func updateEdgeHint(at point: CGPoint) {
+        let state = AppState.shared
+        guard state.isHidden else {
+            state.setEdgeHint(false)
+            return
+        }
+        let near = entries.contains { entry in
+            FullScreenWatcher.shared.covers(entry.geometry.screenFrame)
+                && contains(hintRect(for: entry.geometry), point)
+        }
+        state.setEdgeHint(near)
+    }
+
     /// Ключ экрана, в чью активную зону попал курсор, либо nil.
     private func zoneKey(for point: CGPoint) -> String? {
         for e in entries where contains(activeRect(for: e.geometry), point) {
@@ -169,7 +211,20 @@ import SwiftUI
 
     private func updateHover() {
         let point = NSEvent.mouseLocation
+        updateEdgeHint(at: point)
         let key = zoneKey(for: point)
+
+        if key != nil, key == lastInsideKey {
+            // Курсор всё в той же зоне: важно только, сдвинулся ли он заметно.
+            // Порог отсекает дрожание руки, из-за которого раскрытие
+            // откладывалось бы бесконечно.
+            if let last = lastPoint, hypot(point.x - last.x, point.y - last.y) < 4 { return }
+            lastPoint = point
+            AppState.shared.hoverMoved()
+            return
+        }
+
+        lastPoint = point
         guard key != lastInsideKey else { return }
         lastInsideKey = key
         // Уровень debug: в журнал попадает, только когда за ним следят

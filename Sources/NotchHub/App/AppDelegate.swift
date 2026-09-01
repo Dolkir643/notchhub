@@ -10,6 +10,7 @@ import SwiftUI
         installSignalHandlers()
         AppState.shared.startServices()
         NotchWindowController.shared.start()
+        HotKey.shared.apply(enabled: Settings.shared.hotKeyEnabled)
         Log.app.info("NotchHub запущен из \(Bundle.main.bundlePath, privacy: .public)")
         Log.app.info("автозапуск: \(String(describing: LoginItem.state), privacy: .public)")
         startDemoIfRequested()

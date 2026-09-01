@@ -243,6 +243,32 @@ struct SettingsTab: View {
             .disabled(!settings.openOnHover)
             .opacity(settings.openOnHover ? 1 : 0.45)
 
+            SettingsRow("Ждать остановки") {
+                Toggle("Ждать остановки", isOn: $settings.waitForStill)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .hubTint(Theme.accent)
+            }
+            .disabled(!settings.openOnHover)
+            .opacity(settings.openOnHover ? 1 : 0.45)
+
+            SettingsRow("Прятать в полноэкранных") {
+                Toggle("Прятать в полноэкранных", isOn: $settings.hideInFullScreen)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .hubTint(Theme.accent)
+            }
+
+            SettingsRow(hotKeyTitle) {
+                Toggle(hotKeyTitle, isOn: hotKeyBinding)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .hubTint(Theme.accent)
+            }
+
             SettingsRow("Отклик тачпада") {
                 Toggle("Отклик тачпада", isOn: $settings.hapticsEnabled)
                     .labelsHidden()
@@ -258,6 +284,20 @@ struct SettingsTab: View {
                     .hubTint(Theme.accent)
             }
         }
+    }
+
+    /// Занятую другим приложением комбинацию честно называем занятой:
+    /// молча неработающий переключатель выглядел бы поломкой.
+    private var hotKeyTitle: String {
+        HotKey.shared.isBlocked ? "⌃⌥Пробел (занят)" : "Клавиша ⌃⌥Пробел"
+    }
+
+    private var hotKeyBinding: Binding<Bool> {
+        Binding(get: { settings.hotKeyEnabled },
+                set: { value in
+                    settings.hotKeyEnabled = value
+                    HotKey.shared.apply(enabled: value)
+                })
     }
 
     private var delayLabel: String {

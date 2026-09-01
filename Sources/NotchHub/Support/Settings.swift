@@ -34,6 +34,18 @@ import Combine
     /// Показывать хаб только на встроенном дисплее.
     @Published var builtinScreenOnly: Bool = false { didSet { persist(\.builtinScreenOnly, "builtinScreenOnly", builtinScreenOnly) } }
 
+    /// Раскрывать не по касанию зоны, а когда курсор в ней замер.
+    /// Курсор, перелетевший вкладки браузера по дороге вверх, зону пересекает,
+    /// но не останавливается в ней — и панель больше не выскакивает под руку.
+    @Published var waitForStill: Bool = true { didSet { persist(\.waitForStill, "waitForStill", waitForStill) } }
+
+    /// Прятать островок, пока приложение занимает весь экран.
+    /// Там строка меню скрыта, и островок ложится поверх чужого интерфейса.
+    @Published var hideInFullScreen: Bool = true { didSet { persist(\.hideInFullScreen, "hideInFullScreen", hideInFullScreen) } }
+
+    /// Глобальная горячая клавиша ⌃⌥Пробел.
+    @Published var hotKeyEnabled: Bool = true { didSet { persist(\.hotKeyEnabled, "hotKeyEnabled", hotKeyEnabled) } }
+
     /// Раскрывать панель при наведении (иначе — только по клику).
     @Published var openOnHover: Bool = true { didSet { persist(\.openOnHover, "openOnHover", openOnHover) } }
 
@@ -47,6 +59,9 @@ import Combine
         if d.object(forKey: "hapticsEnabled") != nil { hapticsEnabled = d.bool(forKey: "hapticsEnabled") }
         if d.object(forKey: "builtinScreenOnly") != nil { builtinScreenOnly = d.bool(forKey: "builtinScreenOnly") }
         if d.object(forKey: "openOnHover") != nil { openOnHover = d.bool(forKey: "openOnHover") }
+        if d.object(forKey: "waitForStill") != nil { waitForStill = d.bool(forKey: "waitForStill") }
+        if d.object(forKey: "hideInFullScreen") != nil { hideInFullScreen = d.bool(forKey: "hideInFullScreen") }
+        if d.object(forKey: "hotKeyEnabled") != nil { hotKeyEnabled = d.bool(forKey: "hotKeyEnabled") }
         loading = false
     }
 

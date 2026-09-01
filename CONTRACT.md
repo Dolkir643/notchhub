@@ -17,7 +17,7 @@
 4. **Настройки уже есть**, новые ключи не добавлять: `Settings.shared` содержит
    `launchAtLogin`, `shelfRetentionDays`, `autoScreenshots`, `clipboardLimit`,
    `clipboardEnabled`, `hoverOpenDelay`, `hapticsEnabled`, `builtinScreenOnly`,
-   `openOnHover`.
+   `openOnHover`, `waitForStill`, `hideInFullScreen`, `hotKeyEnabled`.
 5. Весь UI и все строки — **по-русски**. Тексты короткие: панель узкая
    (контент ≈ 574×248 pt после колонки вкладок и отступов).
 6. Всё в главном акторе: сервисы — `@MainActor final class … : ObservableObject`.

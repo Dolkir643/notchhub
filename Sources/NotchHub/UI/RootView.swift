@@ -13,6 +13,12 @@ struct RootView: View {
     private var notchHeight: CGFloat { geometry.size.height }
     private var open: Bool { state.isExpanded }
 
+    /// Островок спрятан: под ним полноэкранное приложение на этом же экране.
+    /// Проверяем именно свой экран — на втором мониторе островок остаётся.
+    private var hidden: Bool {
+        state.isHidden && state.fullScreen.covers(geometry.screenFrame)
+    }
+
     private var contentWidth: CGFloat { open ? Theme.panelWidth : geometry.size.width }
     private var contentHeight: CGFloat { open ? notchHeight + Theme.panelHeight : notchHeight }
 
@@ -55,10 +61,33 @@ struct RootView: View {
             alignment: .center
         )
         .shadow(color: .black.opacity(open ? 0.45 : 0), radius: 18, y: 8)
+        // Спрятанный островок именно гаснет, а не исчезает из иерархии:
+        // подмена вью дала бы собственный переход поверх пружины раскрытия.
+        // Клики он в этом виде не ловит — их принимает язычок.
+        .opacity(hidden ? 0 : 1)
+        .allowsHitTesting(!hidden)
+        .animation(Theme.quick, value: hidden)
+        .overlay(alignment: .top) { edgeHint }
         .contentShape(shape)
         // Клик раскрывает только свёрнутый островок: тап по пустому месту
         // раскрытой панели не должен её захлопывать — это делает клик ВНЕ панели.
         .onTapGesture { if !open { state.expand() } }
+    }
+
+    /// Язычок у верхней кромки: единственное, что остаётся от островка,
+    /// пока приложение занимает весь экран. Появляется, когда курсор подходит
+    /// близко, и отвечает на клик — иначе спрятанный хаб нечем было бы открыть,
+    /// кроме горячей клавиши.
+    @ViewBuilder private var edgeHint: some View {
+        if hidden {
+            Capsule()
+                .fill(Color.white.opacity(state.showsEdgeHint ? 0.35 : 0))
+                .frame(width: 64, height: 3)
+                .padding(.top, 1)
+                .contentShape(Rectangle().size(width: 120, height: 8))
+                .onTapGesture { state.expand() }
+                .animation(Theme.quick, value: state.showsEdgeHint)
+        }
     }
 
     // MARK: — слои
