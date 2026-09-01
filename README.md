@@ -15,8 +15,8 @@
 
 | Образ | Для кого |
 |---|---|
-| `NotchHub-1.0.dmg` | macOS 14 Sonoma и новее |
-| `NotchHub-1.0-macOS11.dmg` | macOS 11 Big Sur — 13 Ventura |
+| `NotchHub-1.1.dmg` | macOS 14 Sonoma и новее |
+| `NotchHub-1.1-macOS11.dmg` | macOS 11 Big Sur — 13 Ventura |
 
 Перетащи NotchHub в «Программы». **Первый запуск — правый клик → «Открыть»**:
 сборка подписана ad-hoc и не нотаризована (платной подписи Apple нет), поэтому
@@ -120,3 +120,5 @@ MACOS11=1 ./Scripts/dmg.sh      # образ для macOS 11+
 NotchHub — MIT, см. [LICENSE](LICENSE).
 
 Сторонний код и его лицензии — в [THIRD-PARTY.md](THIRD-PARTY.md).
+
+История версий — в [CHANGELOG.md](CHANGELOG.md).

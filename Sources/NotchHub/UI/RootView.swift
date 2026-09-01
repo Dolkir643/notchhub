@@ -67,7 +67,9 @@ struct RootView: View {
         .opacity(hidden ? 0 : 1)
         .allowsHitTesting(!hidden)
         .animation(Theme.quick, value: hidden)
-        .overlay(alignment: .top) { edgeHint }
+        // Значением, а не замыканием: `overlay(alignment:content:)` пришёл
+        // только в macOS 12, а сборка для Big Sur обязана компилироваться.
+        .overlay(edgeHint, alignment: .top)
         .contentShape(shape)
         // Клик раскрывает только свёрнутый островок: тап по пустому месту
         // раскрытой панели не должен её захлопывать — это делает клик ВНЕ панели.
