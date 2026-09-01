@@ -1,19 +1,20 @@
 import AppKit
 import Combine
 
-/// Следит за тем, на каких экранах приложение занимает весь экран целиком —
-/// то есть строка меню спрятана и наш островок закрывал бы собой чужой интерфейс
-/// (в браузере это ровно полоса вкладок).
+/// Следит за тем, на каких экранах чужое окно занимает верхнюю полосу экрана —
+/// ту самую, где живёт островок. Там строка меню скрыта, и островок ложится
+/// поверх чужого интерфейса: в браузере ровно на полосу вкладок.
 ///
-/// Как определяется. `currentSystemPresentationOptions` не годится: для чужого
-/// приложения в фуллскрине она остаётся нулевой — проверено замером. Исчезновение
-/// окна строки меню из списка тоже ненадёжно: macOS выдвигает её обратно, стоит
-/// подвести курсор к верхней кромке, и признак пропал бы ровно в тот момент,
-/// когда он нужен. Поэтому смотрим на сами окна: окно обычного уровня, чей
-/// прямоугольник совпал с прямоугольником экрана, и есть полноэкранное.
-/// Под то же условие попадают игры и плееры, прячущие строку меню без
-/// системного фуллскрина, — и это желаемое поведение. Окно, растянутое на весь
-/// экран вручную, под него не попадает: оно начинается под строкой меню.
+/// Как определяется. Вопрос ставится прямо: накрывает ли обычное окно место
+/// островка. Совпадение размеров окна с экраном как признак не годится —
+/// браузер в полноэкранном режиме оставляет себе не ровно весь экран.
+/// В оконном режиме окно начинается под строкой меню, верхняя полоса
+/// свободна, и островок никому не мешает.
+///
+/// `currentSystemPresentationOptions` не годится вовсе: для чужого приложения
+/// она остаётся нулевой — проверено замером. Исчезновение окна строки меню
+/// из списка тоже ненадёжно: macOS выдвигает её обратно, стоит подвести курсор
+/// к верхней кромке, и признак пропал бы ровно тогда, когда он нужен.
 @MainActor final class FullScreenWatcher: ObservableObject {
     static let shared = FullScreenWatcher()
 
@@ -21,6 +22,8 @@ import Combine
     @Published private(set) var coveredScreens: Set<String> = []
 
     private var timer: Timer?
+    /// NOTCHHUB_DIAG=fullscreen — подробный след в журнале: чьё окно накрыло верх.
+    private let diagnostics = ProcessInfo.processInfo.environment["NOTCHHUB_DIAG"] == "fullscreen"
     private var observers: [NSObjectProtocol] = []
 
     private init() {}
@@ -76,20 +79,21 @@ import Combine
                   let bounds = window[kCGWindowBounds as String] as? [String: Any],
                   let rect = rectFrom(bounds) else { continue }
 
-            for screen in screens where matches(rect, screen.frame) {
+            for screen in screens where coversIsland(rect, screen.frame) {
                 covered.insert(screen.key)
+                if diagnostics {
+                    let owner = (window[kCGWindowOwnerName as String] as? String) ?? "?"
+                    Log.window.info("верх экрана занял \(owner, privacy: .public): \(NSStringFromRect(rect), privacy: .public)")
+                }
             }
         }
 
         guard covered != coveredScreens else { return }
-        Log.window.info("полноэкранных экранов: \(covered.count, privacy: .public)")
+        Log.window.info("экранов с занятым верхом: \(covered.count, privacy: .public)")
         coveredScreens = covered
     }
 
     /// CGWindowList отдаёт координаты сверху вниз, экраны AppKit — снизу вверх.
-    /// Сравниваем размер и отступ от верхнего края общего пространства дисплеев,
-    /// поэтому переворачивать ничего не нужно: у главного экрана верх — ноль,
-    /// у остальных — их смещение в той же системе.
     private func rectFrom(_ bounds: [String: Any]) -> CGRect? {
         guard let x = bounds["X"] as? CGFloat, let y = bounds["Y"] as? CGFloat,
               let w = bounds["Width"] as? CGFloat, let h = bounds["Height"] as? CGFloat
@@ -97,14 +101,19 @@ import Combine
         return CGRect(x: x, y: y, width: w, height: h)
     }
 
-    private func matches(_ windowRect: CGRect, _ screenFrame: CGRect) -> Bool {
+    /// Накрывает ли окно место островка: центральную часть верхней полосы экрана.
+    private func coversIsland(_ window: CGRect, _ screenFrame: CGRect) -> Bool {
         guard let main = NSScreen.screens.first else { return false }
-        // Экран в координатах CGWindowList: начало отсчёта — верхний левый угол
-        // главного экрана, ось Y вниз.
-        let flippedY = main.frame.maxY - screenFrame.maxY
-        return abs(windowRect.origin.x - screenFrame.origin.x) < 2
-            && abs(windowRect.origin.y - flippedY) < 2
-            && abs(windowRect.width - screenFrame.width) < 2
-            && abs(windowRect.height - screenFrame.height) < 2
+        // Верхний край экрана в координатах CGWindowList (ось Y вниз).
+        let screenTop = main.frame.maxY - screenFrame.maxY
+        let islandHalfWidth = ScreenGeometry.pseudoNotchWidth / 2
+
+        // Окно должно доставать до самого верха экрана: обычное окно начинается
+        // под строкой меню и на два пункта выше не поднимается.
+        guard window.minY <= screenTop + 2, window.maxY > screenTop + 20 else { return false }
+        // ...и перекрывать центр по горизонтали, где сидит островок.
+        let center = screenFrame.midX - main.frame.minX
+        return window.minX <= center - islandHalfWidth + 2
+            && window.maxX >= center + islandHalfWidth - 2
     }
 }
