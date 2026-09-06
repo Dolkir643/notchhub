@@ -24,6 +24,8 @@ let package = Package(
                 // строгий режим Swift 6 здесь даёт только шум.
                 .swiftLanguageMode(.v5)
             ]
-        )
+        ),
+        .testTarget(name: "NotchHubTests", dependencies: ["NotchHub"],
+                    swiftSettings: [.swiftLanguageMode(.v5)])
     ]
 )

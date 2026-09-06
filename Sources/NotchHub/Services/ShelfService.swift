@@ -29,7 +29,22 @@ struct ShelfItem: Identifiable, Codable, Equatable {
     /// Размер превью в точках (карточка 104×84, берём с запасом).
     static let thumbnailSize = CGSize(width: 120, height: 90)
 
-    private let store = ShelfStore()
+    private let store: ShelfStore
+    private var initialization: Task<Void, Never>?
+    private var ready = false
+    private var generation = 0
+    private var removing: Set<UUID> = []
+    private let recycle: ([URL], @escaping @Sendable ([URL: URL], Error?) -> Void) -> Void
+
+    init(store: ShelfStore = ShelfStore(),
+         recycle: @escaping ([URL], @escaping @Sendable ([URL: URL], Error?) -> Void) -> Void = {
+             NSWorkspace.shared.recycle($0, completionHandler: $1)
+         }) {
+        self.store = store
+        self.recycle = recycle
+    }
+
+    func waitUntilReady() async { await initialization?.value }
     private let thumbnailer = ShelfThumbnailer()
     private var watcher: ShelfScreenshotWatcher?
     private var thumbnailsInFlight: Set<UUID> = []
@@ -43,13 +58,22 @@ struct ShelfItem: Identifiable, Codable, Equatable {
         guard !running else { return }
         running = true
 
+        generation &+= 1
+        let token = generation
         let store = self.store
-        Task.detached(priority: .utility) { [weak self] in
-            store.clearInbox()
-            let loaded = store.load()
-            store.pruneOrphans(keeping: loaded)
-            guard let service = self else { return }
-            await MainActor.run { service.adopt(loaded, replacing: true) }
+        initialization = Task { [weak self] in
+            let result = await Task.detached(priority: .utility) {
+                Result { try store.loadRecovering() }
+            }.value
+            guard let self, self.running, self.generation == token else { return }
+            switch result {
+            case .success(let loaded):
+                self.ready = true
+                self.adopt(loaded, replacing: true)
+            case .failure(let error):
+                Log.shelf.error("Полка не загружена: \(error.localizedDescription, privacy: .public)")
+                AppState.shared.flash("Не удалось загрузить полку")
+            }
         }
 
         // Настройку можно щёлкнуть в любой момент — слушаем её, а не читаем один раз.
@@ -82,12 +106,16 @@ struct ShelfItem: Identifiable, Codable, Equatable {
 
     func stop() {
         running = false
+        generation &+= 1
+        initialization?.cancel()
+        initialization = nil
         watcher?.stop()
         watcher = nil
         maintenance?.invalidate()
         maintenance = nil
         bag.removeAll()
-        store.save(items)
+        if ready { store.save(items) }
+        ready = false
     }
 
     // MARK: — приём drag&drop
@@ -121,32 +149,31 @@ struct ShelfItem: Identifiable, Codable, Equatable {
         }
         guard !unique.isEmpty else { return }
 
-        let store = self.store
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let fresh = unique.compactMap { store.copyIn($0, isScreenshot: isScreenshot) }
-            guard !fresh.isEmpty, let service = self else { return }
-            await MainActor.run {
-                service.adopt(fresh, replacing: false)
-                if isScreenshot { AppState.shared.flash("Скриншот на полке") }
-            }
+        let token = generation
+        Task { [weak self] in
+            guard let self else { return }
+            await self.waitUntilReady()
+            guard self.running, self.ready, self.generation == token else { return }
+            let store = self.store
+            let fresh = await Task.detached(priority: .userInitiated) {
+                unique.compactMap { store.copyIn($0, isScreenshot: isScreenshot) }
+            }.value
+            guard self.running, self.generation == token, !fresh.isEmpty else { return }
+            self.adopt(fresh, replacing: false)
+            if isScreenshot { AppState.shared.flash("Скриншот на полке") }
         }
     }
 
     // MARK: — удаление
 
     func remove(_ item: ShelfItem) {
-        items.removeAll { $0.id == item.id }
-        thumbnails[item.id] = nil
-        store.save(items)
+        guard ready else { return }
         trash([item])
     }
 
     func clearAll() {
-        let gone = items
-        items = []
-        thumbnails = [:]
-        store.save(items)
-        trash(gone)
+        guard ready else { return }
+        trash(items)
     }
 
     /// Открыть в Finder.
@@ -193,13 +220,15 @@ struct ShelfItem: Identifiable, Codable, Equatable {
 
     /// Автоуборка по возрасту: 0 в настройках — не чистить.
     private func cleanupExpired() {
+        guard ready, running else { return }
         let days = Settings.shared.shelfRetentionDays
         guard days > 0 else { return }
         let deadline = Date().addingTimeInterval(-Double(days) * 86_400)
-        let expired = items.filter { $0.added < deadline }
+        let expired = items.filter { $0.added < deadline && !removing.contains($0.id) }
         guard !expired.isEmpty else { return }
 
-        items.removeAll { $0.added < deadline }
+        let expiredIDs = Set(expired.map(\.id))
+        items.removeAll { expiredIDs.contains($0.id) }
         for item in expired { thumbnails[item.id] = nil }
         store.save(items)
 
@@ -211,20 +240,34 @@ struct ShelfItem: Identifiable, Codable, Equatable {
         Log.shelf.info("Автоуборка полки: \(expired.count, privacy: .public)")
     }
 
-    private func trash(_ removed: [ShelfItem]) {
+    private func trash(_ requested: [ShelfItem]) {
+        let removed = requested.filter { !removing.contains($0.id) }
         guard !removed.isEmpty else { return }
-        let store = self.store
-        NSWorkspace.shared.recycle(removed.map(\.url)) { _, error in
-            if let error {
-                Log.shelf.error("Корзина отказалась: \(error.localizedDescription, privacy: .public)")
+        removing.formUnion(removed.map(\.id))
+        recycle(removed.map { store.url(for: $0) }) { [weak self] moved, error in
+            Task { @MainActor in
+                guard let self else { return }
+                let succeeded = removed.filter { moved[self.store.url(for: $0)] != nil }
+                let ids = Set(succeeded.map(\.id))
+                self.removing.subtract(removed.map(\.id))
+                self.items.removeAll { ids.contains($0.id) }
+                for item in succeeded {
+                    self.thumbnails[item.id] = nil
+                    self.store.delete(item)
+                }
+                self.store.save(self.items)
+                if error != nil || succeeded.count != removed.count {
+                    Log.shelf.error("Не все файлы перемещены в Корзину")
+                    AppState.shared.flash("Не удалось удалить часть файлов")
+                }
             }
-            for item in removed { store.delete(item) }
         }
     }
 
     // MARK: — слежка за скриншотами
 
     private func setScreenshotWatch(_ enabled: Bool) {
+        guard running else { return }
         guard enabled else {
             watcher?.stop()
             watcher = nil

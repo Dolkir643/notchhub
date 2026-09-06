@@ -6,6 +6,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${CONFIG:-release}"
 APP="$ROOT/build/NotchHub.app"
 
+# Три профиля из одних исходников. MACOS11 сохранён для прежних команд сборки.
+VARIANT="${NOTCHHUB_VARIANT:-no-notch}"
+if [ "${MACOS11:-0}" = "1" ]; then VARIANT=legacy; fi
+case "$VARIANT" in
+    legacy) export MACOS11=1 ;;
+    notch|no-notch) : ;;
+    *) echo "Неизвестный NOTCHHUB_VARIANT: $VARIANT" >&2; exit 1 ;;
+esac
+
 # MACOS11=1 — сборка для Big Sur и новее. Иначе macOS 14+.
 # Одни и те же исходники: различаются только минимальная система и то, что
 # для старых нужно положить в бандл рантайм Swift Concurrency.
@@ -67,6 +76,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 cp "$BIN" "$APP/Contents/MacOS/NotchHub"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $MIN_MACOS" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :NotchHubVariant $VARIANT" "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 cp -R "$ADAPTER_BUILD/MediaRemoteAdapter.framework" "$APP/Contents/Frameworks/"
@@ -117,6 +127,6 @@ say "Подписываю ad-hoc"
 codesign --force --sign - --timestamp=none "$APP/Contents/Frameworks/MediaRemoteAdapter.framework" >/dev/null 2>&1
 codesign --force --sign - --timestamp=none "$APP/Contents/Resources/MediaRemoteAdapterTestClient" >/dev/null 2>&1
 codesign --force --sign - --timestamp=none "$APP" >/dev/null 2>&1
-codesign --verify --verbose=1 "$APP" 2>&1 | tail -2 || true
+codesign --verify --deep --strict --verbose=1 "$APP"
 
 say "Готово: $APP (минимум macOS $MIN_MACOS)"

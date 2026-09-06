@@ -35,11 +35,38 @@ struct RootView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            notch
+            if geometry.usesEdgeTrigger && !open {
+                compactTrigger
+            } else {
+                notch
+                    .padding(.top, geometry.usesEdgeTrigger ? EdgeTrigger.overshoot : 0)
+            }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .ignoresSafeArea()
+    }
+
+    /// На экране без выреза строка меню принадлежит активному приложению.
+    /// Широкая зона у кромки удобна для клика и приёма файлов; меню ниже неё доступно.
+    private var compactTrigger: some View {
+        Capsule()
+            .fill(Color.white.opacity(state.showsEdgeHint ? 0.55 : 0))
+            .frame(width: 120, height: 3)
+            .padding(.top, EdgeTrigger.overshoot)
+            .frame(width: EdgeTrigger.width, height: EdgeTrigger.height + EdgeTrigger.overshoot, alignment: .top)
+            .background(Color.black.opacity(0.001))
+            .contentShape(Rectangle())
+            .onTapGesture { state.expand() }
+            .onDrop(of: [.fileURL, .item], isTargeted: Binding(
+                get: { state.isDropTargeted },
+                set: { targeted in
+                    if targeted { state.dropEntered() } else { state.dropExited() }
+                })) { providers in
+                    state.shelf.handleDrop(providers)
+                }
+            .animation(Theme.quick, value: state.showsEdgeHint)
+            .accessibilityLabel("Открыть NotchHub")
     }
 
     private var notch: some View {

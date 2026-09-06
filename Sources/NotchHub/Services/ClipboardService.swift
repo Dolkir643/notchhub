@@ -16,11 +16,14 @@ struct ClipItem: Identifiable, Equatable {
     let kind: Kind
     /// Отпечаток содержимого: по нему ловим повторы, не сравнивая мегабайты данных.
     let signature: String
+    /// Исходные байты для вставки; NSImage в kind служит только превью.
+    let originalImageData: Data?
 
-    init(id: UUID = UUID(), date: Date = Date(), kind: Kind, signature: String? = nil) {
+    init(id: UUID = UUID(), date: Date = Date(), kind: Kind, signature: String? = nil, originalImageData: Data? = nil) {
         self.id = id
         self.date = date
         self.kind = kind
+        self.originalImageData = originalImageData
         self.signature = signature ?? kind.defaultSignature
     }
 
@@ -107,7 +110,13 @@ enum ClipSignature {
 
     private static let pollInterval: TimeInterval = 0.3
 
-    private let pasteboard = NSPasteboard.general
+    private let pasteboard: NSPasteboard
+    private var generation = 0
+    static let memoryLimit = 64 * 1024 * 1024
+
+    init(pasteboard: NSPasteboard = .general) {
+        self.pasteboard = pasteboard
+    }
     private let settings = Settings.shared
 
     private var timer: Timer?
@@ -154,6 +163,7 @@ enum ClipSignature {
     }
 
     private func stopTimer() {
+        generation &+= 1
         guard timer != nil else { return }
         timer?.invalidate()
         timer = nil
@@ -170,7 +180,7 @@ enum ClipSignature {
         capture()
     }
 
-    private func capture() {
+    func capture() {
         guard !isPrivate() else {
             Log.clipboard.debug("запись помечена как приватная — пропущена")
             return
@@ -182,6 +192,7 @@ enum ClipSignature {
         }
 
         if let raw = pasteboardText() {
+            guard raw.utf8.count <= Self.memoryLimit else { return }
             let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return }
             if let link = webURL(from: text) {
@@ -247,28 +258,29 @@ enum ClipSignature {
     }
 
     /// Скриншот может весить десятки мегабайт — уменьшаем и хэшируем вне главного актора.
-    private func captureImage(_ data: Data) {
-        Task.detached(priority: .utility) { [weak self] in
-            guard let thumb = ClipThumbnail.make(from: data) else { return }
-            await self?.append(thumbnail: thumb.png, signature: thumb.signature)
+    @discardableResult
+    func captureImage(_ data: Data) -> Task<Void, Never> {
+        let token = generation
+        return Task { [weak self] in
+            guard data.count <= Self.memoryLimit else { return }
+            let thumb = await Task.detached(priority: .utility) {
+                ClipThumbnail.make(from: data)
+            }.value
+            guard let self, let thumb, self.generation == token,
+                  self.settings.clipboardEnabled, let image = NSImage(data: thumb.png) else { return }
+            self.push(kind: .image(image), signature: thumb.signature, originalImageData: data)
         }
-    }
-
-    private func append(thumbnail png: Data, signature: String) {
-        // Пока считалось превью, слежение могли выключить — тогда записи не место в истории.
-        guard settings.clipboardEnabled, let image = NSImage(data: png) else { return }
-        push(kind: .image(image), signature: signature)
     }
 
     // MARK: — история
 
-    private func push(kind: ClipItem.Kind, signature: String? = nil) {
+    private func push(kind: ClipItem.Kind, signature: String? = nil, originalImageData: Data? = nil) {
         let sign = signature ?? kind.defaultSignature
 
         // Повтор того же значения не плодит запись — только освежает дату и поднимает наверх.
         if let index = items.firstIndex(where: { $0.signature == sign }) {
             let old = items[index]
-            let refreshed = ClipItem(id: old.id, date: Date(), kind: old.kind, signature: old.signature)
+            let refreshed = ClipItem(id: old.id, date: Date(), kind: old.kind, signature: old.signature, originalImageData: old.originalImageData)
             if index == 0 {
                 items[0] = refreshed
             } else {
@@ -278,14 +290,26 @@ enum ClipSignature {
             return
         }
 
-        items.insert(ClipItem(kind: kind, signature: sign), at: 0)
+        items.insert(ClipItem(kind: kind, signature: sign, originalImageData: originalImageData), at: 0)
         trim(to: settings.clipboardLimit)
     }
 
     private func trim(to limit: Int) {
         let maxCount = max(5, limit)
-        guard items.count > maxCount else { return }
-        items.removeLast(items.count - maxCount)
+        if items.count > maxCount { items.removeLast(items.count - maxCount) }
+        func byteCount(_ item: ClipItem) -> Int {
+            if let data = item.originalImageData { return data.count }
+            switch item.kind {
+            case .text(let text): return text.utf8.count
+            case .url(let url): return url.absoluteString.utf8.count
+            case .image: return 0
+            }
+        }
+        var bytes = items.reduce(0) { $0 + byteCount($1) }
+        while bytes > Self.memoryLimit, let oldest = items.last {
+            bytes -= byteCount(oldest)
+            items.removeLast()
+        }
     }
 
     // MARK: — действия
@@ -305,16 +329,23 @@ enum ClipSignature {
         case .image(let image):
             // Сначала данные, потом clearContents: иначе на битой картинке
             // мы бы просто стёрли пользователю буфер и ничего не положили взамен.
-            guard let tiff = image.tiffRepresentation else { return }
-            pasteboard.clearContents()
-            pasteboard.setData(tiff, forType: .tiff)
+            if let original = item.originalImageData,
+               let source = CGImageSourceCreateWithData(original as CFData, nil),
+               let type = CGImageSourceGetType(source) {
+                pasteboard.clearContents()
+                pasteboard.setData(original, forType: NSPasteboard.PasteboardType(type as String))
+            } else {
+                guard let tiff = image.tiffRepresentation else { return }
+                pasteboard.clearContents()
+                pasteboard.setData(tiff, forType: .tiff)
+            }
         }
         // Своя же запись не должна вернуться в историю дублем на следующем тике.
         lastChangeCount = pasteboard.changeCount
 
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             let old = items[index]
-            let refreshed = ClipItem(id: old.id, date: Date(), kind: old.kind, signature: old.signature)
+            let refreshed = ClipItem(id: old.id, date: Date(), kind: old.kind, signature: old.signature, originalImageData: old.originalImageData)
             items.remove(at: index)
             items.insert(refreshed, at: 0)
         }
@@ -325,6 +356,7 @@ enum ClipSignature {
     }
 
     func clearAll() {
+        generation &+= 1
         items.removeAll()
     }
 }

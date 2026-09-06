@@ -14,6 +14,7 @@ import SwiftUI
     private var entries: [Entry] = []
     private var moveMonitors: [Any] = []
     private var clickMonitor: Any?
+    private var localClickMonitor: Any?
     private var pollTimer: Timer?
     private var lastInsideKey: String?
     private var lastPoint: CGPoint?
@@ -63,6 +64,7 @@ import SwiftUI
             let geo = ScreenGeometry.geometry(of: screen)
             let frame = windowFrame(for: geo, on: screen)
             let panel = NotchPanel(contentRect: frame)
+            panel.acceptsKeyInput = AppState.shared.isExpanded
             let host = NotchHostingView(rootView: RootView(geometry: geo)
                 .environmentObject(AppState.shared))
             host.frame = CGRect(origin: .zero, size: frame.size)
@@ -80,10 +82,11 @@ import SwiftUI
     private func windowFrame(for geo: NotchGeometry, on screen: NSScreen) -> CGRect {
         let width = max(Theme.panelWidth, geo.size.width) + 80
         let height = geo.size.height + Theme.panelHeight + 60
+        let overshoot = geo.usesEdgeTrigger ? EdgeTrigger.overshoot : 0
         return CGRect(x: screen.frame.midX - width / 2,
                       y: screen.frame.maxY - height,
                       width: width,
-                      height: height)
+                      height: height + overshoot)
     }
 
     /// В панели правят текст: поиск, заготовку или поле переводчика.
@@ -119,20 +122,40 @@ import SwiftUI
         }) { moveMonitors.append(l) }
 
         clickMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
                 MainActor.assumeIsolated {
-                    guard let self, AppState.shared.isExpanded else { return }
+                    guard let self else { return }
+                    if event.type == .leftMouseDown, self.openFromEdge(at: NSEvent.mouseLocation) { return }
+                    guard AppState.shared.isExpanded else { return }
                     if self.zoneKey(for: NSEvent.mouseLocation) == nil {
                         AppState.shared.collapse(immediate: true)
                     }
                 }
             }
 
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            let opened = MainActor.assumeIsolated {
+                self?.openFromEdge(at: NSEvent.mouseLocation) == true
+            }
+            // Поглощаем открывающий клик: он не должен попасть в уже раскрытое содержимое.
+            return opened ? nil : event
+        }
+
         // Страховка: курсор может оказаться в зоне без единого события —
         // после перехода между Spaces, из фуллскрина или при программном перемещении.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateHover() }
         }
+    }
+
+    @discardableResult
+    private func openFromEdge(at point: CGPoint) -> Bool {
+        guard !AppState.shared.isExpanded,
+              entries.contains(where: { $0.geometry.usesEdgeTrigger
+                  && EdgeTrigger.contains(point, on: $0.geometry.screenFrame) }) else { return false }
+        AppState.shared.expand()
+        updateHover()
+        return true
     }
 
     /// Ширина и высота полоски-триггера, заменяющей спрятанный островок.
@@ -142,7 +165,7 @@ import SwiftUI
     private static let stripWidth: CGFloat = 200
     /// Зона, в которой показывается язычок-подсказка.
     private static let hintHeight: CGFloat = 44
-    private static let hintWidth: CGFloat = 280
+    private static let hintWidth: CGFloat = EdgeTrigger.width + 80
 
     /// Активная зона панели на экране в текущем состоянии.
     private func activeRect(for geo: NotchGeometry) -> CGRect {
@@ -186,17 +209,18 @@ import SwiftUI
             && point.y >= rect.minY && point.y <= rect.maxY
     }
 
-    /// Язычок показываем, только когда островок действительно спрятан:
-    /// в обычном виде подсказывать нечего, островок и так на месте.
+    /// Подсказка нужна на экранах без выреза и при скрытии настоящей чёлки
+    /// поверх полноэкранного приложения.
     private func updateEdgeHint(at point: CGPoint) {
         let state = AppState.shared
-        guard state.isHidden else {
+        guard !state.isExpanded else {
             state.setEdgeHint(false)
             return
         }
         let near = entries.contains { entry in
-            FullScreenWatcher.shared.covers(entry.geometry.screenFrame)
-                && contains(hintRect(for: entry.geometry), point)
+            let needsHint = entry.geometry.usesEdgeTrigger
+                || (state.isHidden && FullScreenWatcher.shared.covers(entry.geometry.screenFrame))
+            return needsHint && contains(hintRect(for: entry.geometry), point)
         }
         state.setEdgeHint(near)
     }
@@ -204,6 +228,9 @@ import SwiftUI
     /// Ключ экрана, в чью активную зону попал курсор, либо nil.
     private func zoneKey(for point: CGPoint) -> String? {
         for e in entries where contains(activeRect(for: e.geometry), point) {
+            // На экране без выреза наведение лишь показывает индикатор.
+            // Клик и drag & drop обрабатывает компактная вью у самой кромки.
+            if e.geometry.usesEdgeTrigger && !AppState.shared.isExpanded { continue }
             return NSStringFromRect(e.geometry.screenFrame)
         }
         return nil

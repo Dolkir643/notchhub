@@ -25,7 +25,8 @@ say "Архитектуры адаптера:   $(lipo -archs "$APP/Contents/Fra
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")"
 # Имя, подпись тома и оговорки в записке зависят от того, под какую систему собрали.
-if [ "${MACOS11:-0}" = "1" ]; then
+VARIANT="$(/usr/libexec/PlistBuddy -c 'Print :NotchHubVariant' "$APP/Contents/Info.plist")"
+if [ "$VARIANT" = "legacy" ]; then
     DMG="$ROOT/build/NotchHub-$VERSION-macOS11.dmg"
     VOLNAME="NotchHub $VERSION (macOS 11)"
     LEGACY_NOTE="
@@ -36,9 +37,18 @@ if [ "${MACOS11:-0}" = "1" ]; then
     • на macOS 11 нет автофокуса в полях ввода — кликните в поле мышью.
 "
 else
-    DMG="$ROOT/build/NotchHub-$VERSION.dmg"
-    VOLNAME="NotchHub $VERSION"
+    DMG="$ROOT/build/NotchHub-$VERSION-$VARIANT.dmg"
+    VOLNAME="NotchHub $VERSION ($VARIANT)"
     LEGACY_NOTE=""
+fi
+
+if [ "$VARIANT" = "notch" ]; then
+    OPEN_NOTE="Наведи курсор на чёлку и задержи его — панель раскроется."
+else
+    OPEN_NOTE="Подведи курсор к центру верхней кромки и нажми на индикатор.
+   Зона клика — 320×8 точек, включая самый верх экрана.
+   Перетаскивание файла на индикатор открывает полку.
+   На экране с настоящим вырезом работает раскрытие наведением."
 fi
 
 # 2. Содержимое образа --------------------------------------------------------
@@ -66,8 +76,9 @@ NotchHub $VERSION ($BUILD)
     Совсем упрямый случай лечится одной командой в Терминале:
         xattr -dr com.apple.quarantine /Applications/NotchHub.app
 
-3. Иконки в Dock нет — это нормально. Наведи курсор на верх экрана,
-   по центру строки меню, и панель раскроется.
+3. Иконки в Dock нет — это нормально.
+   $OPEN_NOTE
+   Горячая клавиша во всех сборках: ⌃⌥Пробел.
 
 НАСТРОЙКА
     Автозапуск, время жизни файлов на полке и размер истории буфера —

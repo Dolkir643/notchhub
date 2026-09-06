@@ -3,6 +3,8 @@ import CoreGraphics
 
 /// Геометрия чёлки конкретного экрана.
 struct NotchGeometry: Equatable {
+    var usesEdgeTrigger: Bool { HubVariant.current.usesEdgeTrigger(hasRealNotch: isRealNotch) }
+
     /// Размер физической (или нарисованной) чёлки.
     var size: CGSize
     /// Есть ли настоящий вырез камеры.

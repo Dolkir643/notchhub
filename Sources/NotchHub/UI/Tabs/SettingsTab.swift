@@ -354,7 +354,7 @@ struct SettingsTab: View {
     }
 
     private var statusLine: String {
-        [versionText,
+        [versionText, HubVariant.current.title,
          "музыка: \(state.media.backend.label)",
          "полка: \(shelfText)"].joined(separator: "  ·  ")
     }
