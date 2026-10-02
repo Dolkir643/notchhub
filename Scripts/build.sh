@@ -26,16 +26,18 @@ else
 fi
 
 # xcode-select смотрит на CommandLineTools, поэтому берём Xcode переменной окружения.
-if [ -d /Applications/Xcode.app/Contents/Developer ]; then
+if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app/Contents/Developer ]; then
     export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
+
+export DEVELOPER_DIR="${DEVELOPER_DIR:-$(xcode-select -p)}"
 
 say() { printf "\033[1;34m==>\033[0m %s\n" "$1"; }
 
 # 1. Адаптер MediaRemote ------------------------------------------------------
 ADAPTER_SRC="$ROOT/Vendor/mediaremote-adapter"
 ADAPTER_BUILD="$ROOT/build/adapter-$MIN_MACOS"
-if [ ! -f "$ADAPTER_BUILD/MediaRemoteAdapter.framework/MediaRemoteAdapter" ]; then
+{
     say "Собираю MediaRemoteAdapter.framework"
     # Обе архитектуры явно: на Apple Silicon системный perl запускается как arm64
     # и x86-фреймворк просто не загрузит — музыка молча отвалится.
@@ -47,9 +49,7 @@ if [ ! -f "$ADAPTER_BUILD/MediaRemoteAdapter.framework/MediaRemoteAdapter" ]; th
         -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
         -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN_MACOS" >/dev/null
     cmake --build "$ADAPTER_BUILD" >/dev/null
-else
-    say "MediaRemoteAdapter.framework уже собран"
-fi
+}
 
 # 2. Swift --------------------------------------------------------------------
 # UNIVERSAL=1 — собрать под обе архитектуры (для раздачи на другие маки).
@@ -65,8 +65,8 @@ cd "$ROOT"
 # `${x[@]+"${x[@]}"}` вместо простого `"${x[@]}"`: в штатном bash 3.2 из macOS
 # раскрытие пустого массива под `set -u` считается обращением к незаданной
 # переменной и рубит сборку. Ловится только при вызове без UNIVERSAL=1.
-swift build -c "$CONFIG" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}
-BIN="$(swift build -c "$CONFIG" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)/NotchHub"
+xcrun swift build -c "$CONFIG" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}
+BIN="$(xcrun swift build -c "$CONFIG" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)/NotchHub"
 
 # 3. Бандл --------------------------------------------------------------------
 say "Собираю $APP"

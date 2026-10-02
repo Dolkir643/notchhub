@@ -49,6 +49,7 @@ enum TranslateStatus: Equatable {
 
     /// Пауза после последнего нажатия клавиши.
     private static let debounce: UInt64 = 400_000_000
+    private(set) var revision = 0
     private var debounceTask: Task<Void, Never>?
     /// Панель живёт на каждом экране, а переводить должен ровно один движок:
     /// иначе на двух мониторах диалог докачки пакета выскочит дважды.
@@ -82,6 +83,8 @@ enum TranslateStatus: Equatable {
     func inputChanged() {
         debounceTask?.cancel()
         debounceTask = nil
+        revision &+= 1
+        output = ""
 
         guard TranslateService.isSupported else {
             status = .unsupported
@@ -96,6 +99,7 @@ enum TranslateStatus: Equatable {
             return
         }
 
+        status = .translating
         debounceTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: TranslateService.debounce)
             guard !Task.isCancelled, let self, !self.query.isEmpty else { return }
@@ -110,6 +114,7 @@ enum TranslateStatus: Equatable {
         debounceTask?.cancel()
         debounceTask = nil
 
+        revision &+= 1
         let next = direction.flipped
         let carried = output.isEmpty ? input : output
         pinnedDirection = next
@@ -126,6 +131,7 @@ enum TranslateStatus: Equatable {
 
     /// Повторить перевод: после ошибки или отказа от докачки языкового пакета.
     func retry() {
+        revision &+= 1
         guard TranslateService.isSupported, !query.isEmpty else { return }
         debounceTask?.cancel()
         debounceTask = nil

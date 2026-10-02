@@ -4,16 +4,24 @@ import SwiftUI
 /// Вкладка «Буфер»: история копирований, клик — вернуть значение в буфер.
 struct ClipboardTab: View {
     @EnvironmentObject private var state: AppState
-    @State private var query = ""
+    @State private var selectedID: UUID?
+    private var query: String { state.clipboard.searchQuery }
     /// Опора для TimelineView: не пересчитываем расписание на каждой перерисовке.
     @State private var anchor = Date()
 
     private var all: [ClipItem] { state.clipboard.items }
 
-    private var shown: [ClipItem] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return all }
-        return all.filter { $0.preview.localizedCaseInsensitiveContains(q) }
+    private var shown: [ClipItem] { state.clipboard.searchResults }
+    private var selection: ClipItem? { shown.first { $0.id == selectedID } ?? shown.first }
+
+    private func move(_ offset: Int) {
+        guard !shown.isEmpty else { return }
+        let index = shown.firstIndex { $0.id == selection?.id } ?? 0
+        selectedID = shown[max(0, min(shown.count - 1, index + offset))].id
+    }
+    private func copy(_ item: ClipItem, close: Bool = false) {
+        state.clipboard.copyBack(item)
+        if close { state.collapse(immediate: true) } else { state.flash("Скопировано") }
     }
 
     var body: some View {
@@ -33,14 +41,15 @@ struct ClipboardTab: View {
                         ClipTextButton(title: "Очистить", icon: "trash") {
                             withAnimation(Theme.quick) {
                                 state.clipboard.clearAll()
-                                query = ""
+                                state.clipboard.searchQuery = ""
                             }
                         }
                     }
                 }
             }
 
-            if !all.isEmpty { search }
+            search
+            if state.clipboard.isSearching { Text("Ищу…").font(.system(size: 10)).hubForeground(Theme.secondaryText) }
             content
         }
     }
@@ -52,12 +61,11 @@ struct ClipboardTab: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 10, weight: .medium))
                 .hubForeground(Theme.secondaryText)
-            TextField("Поиск", text: $query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 11))
-                .hubForeground(.white)
+            HubSearchField(text: Binding(get: { query }, set: { state.clipboard.searchQuery = $0 }),
+                           placeholder: "Поиск по всему тексту", autofocus: state.keyboardMode,
+                           onMove: move, onSubmit: { if let item = selection { copy(item, close: true) } })
             if !query.isEmpty {
-                Button { query = "" } label: {
+                Button { state.clipboard.searchQuery = "" } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 10))
                         .hubForeground(Theme.secondaryText)
@@ -86,19 +94,34 @@ struct ClipboardTab: View {
     private var list: some View {
         // Каждые 20 с обновляется подпись «3 мин назад» у всех строк.
         ClipTicker(anchor: anchor, every: 20) { now in
+            ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 4) {
                     ForEach(shown) { item in
-                        ClipRow(item: item, now: now) {
-                            state.clipboard.copyBack(item)
-                            Haptics.tap()
-                            state.flash("Скопировано")
-                        } onDelete: {
-                            withAnimation(Theme.quick) { state.clipboard.remove(item) }
+                        ClipRow(item: item, now: now) { copy(item) } onDelete: {
+                            state.clipboard.remove(item)
                         }
+                        .id(item.id)
+                        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(
+                            state.keyboardMode && selection?.id == item.id ? Theme.accent : .clear))
+                        .contextMenu {
+                            Button("Копировать") { copy(item) }
+                            Button("На полку") { state.putOnShelf(item) }
+                            if let text = item.textValue {
+                                Button("В заготовки") { state.makeSnippet(text) }
+                                if TranslateService.isSupported {
+                                    Button("Перевести") { state.translateText(text) }
+                                }
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(item.preview)
+                        .accessibilityAction { copy(item) }
                     }
                 }
                 .padding(.bottom, 2)
+            }
+            .hubOnChange(of: selectedID) { id in if let id { proxy.scrollTo(id) } }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

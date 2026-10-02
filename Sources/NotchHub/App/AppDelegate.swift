@@ -14,6 +14,9 @@ import SwiftUI
         Log.app.info("NotchHub запущен из \(Bundle.main.bundlePath, privacy: .public)")
         Log.app.info("автозапуск: \(String(describing: LoginItem.state), privacy: .public)")
         startDemoIfRequested()
+        if !Settings.shared.onboardingComplete {
+            AppState.shared.expand(keyboard: true)
+        }
     }
 
     // ВРЕМЕННОЕ: держит панель раскрытой для снятия скриншотов при доводке вида.
@@ -45,6 +48,15 @@ import SwiftUI
             source.resume()
             signalSources.append(source)
         }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task {
+            await AppState.shared.snippets.waitUntilReady()
+            await AppState.shared.snippets.waitUntilSaved()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

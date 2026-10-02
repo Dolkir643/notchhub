@@ -19,9 +19,9 @@ enum Theme {
     static let tabButton: CGFloat = 30
     static let tabSpacing: CGFloat = 4
 
-    static let openSpring: Animation = .spring(response: 0.42, dampingFraction: 0.8)
-    static let closeSpring: Animation = .spring(response: 0.45, dampingFraction: 1.0)
-    static let quick: Animation = .spring(response: 0.28, dampingFraction: 0.9)
+    static var openSpring: Animation { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? .linear(duration: 0) : .spring(response: 0.42, dampingFraction: 0.8) }
+    static var closeSpring: Animation { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? .linear(duration: 0) : .spring(response: 0.45, dampingFraction: 1.0) }
+    static var quick: Animation { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? .linear(duration: 0) : .spring(response: 0.28, dampingFraction: 0.9) }
 
     static let accent = Color(red: 0.40, green: 0.72, blue: 1.0)
     static let panelFill = Color.black.opacity(0.86)

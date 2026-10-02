@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 /// дисплеев), а брошенный локальный монитор молча глотал бы ⌫ у всего приложения.
 @MainActor final class ShelfSelection: ObservableObject {
     @Published var id: UUID?
+    @Published var ids = Set<UUID>()
 
     private var monitor: Any?
 
@@ -31,12 +32,44 @@ struct ShelfTab: View {
     @EnvironmentObject private var state: AppState
     @StateObject private var selection = ShelfSelection()
     @State private var targeted = false
+    @State private var query = ""
+    private var shown: [ShelfItem] {
+        shelf.items.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
+            .sorted { $0.isPinned && !$1.isPinned }
+    }
+    private var selected: [ShelfItem] { shown.filter { selection.ids.contains($0.id) } }
+
+    private func select(_ item: ShelfItem) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.command) {
+            if !selection.ids.insert(item.id).inserted { selection.ids.remove(item.id) }
+        } else if flags.contains(.shift), let anchor = shown.firstIndex(where: { $0.id == selection.id }),
+                  let target = shown.firstIndex(where: { $0.id == item.id }) {
+            selection.ids = Set(shown[min(anchor, target)...max(anchor, target)].map(\.id))
+        } else { selection.ids = [item.id] }
+        selection.id = item.id
+    }
+    private func move(_ delta: Int) {
+        guard !shown.isEmpty else { return }
+        let index = shown.firstIndex { $0.id == selection.id } ?? 0
+        let item = shown[max(0, min(shown.count - 1, index + delta))]
+        selection.id = item.id
+        selection.ids = [item.id]
+    }
+    private func previewSelection() {
+        let urls = (selected.isEmpty ? Array(shown.prefix(1)) : selected).map(\.url)
+        ShelfPreview.shared.show(urls)
+    }
 
     private var shelf: ShelfService { state.shelf }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             TabHeader(title: "Полка") {
+                if !selected.isEmpty {
+                    Button("Удалить (\(selected.count))") { shelf.remove(ids: selection.ids); selection.ids.removeAll() }
+                        .buttonStyle(.plain)
+                }
                 if !shelf.isEmpty {
                     Text("\(shelf.items.count) · \(Fmt.size(shelf.totalSize))")
                         .font(.system(size: 11))
@@ -44,6 +77,7 @@ struct ShelfTab: View {
                     Button {
                         shelf.clearAll()
                         selection.id = nil
+                        selection.ids.removeAll()
                     } label: {
                         Text("Очистить")
                             .font(.system(size: 11, weight: .medium))
@@ -56,6 +90,10 @@ struct ShelfTab: View {
                     .help("Убрать все файлы в Корзину")
                 }
             }
+            HubSearchField(text: $query, placeholder: "Поиск файлов · ⌘клик — выбрать несколько",
+                           autofocus: state.keyboardMode, onMove: { move($0); NSApp.keyWindow?.makeFirstResponder(NSApp.keyWindow) },
+                           onSubmit: { if let item = selected.first ?? shown.first { shelf.open(item) } })
+                .padding(.horizontal, 8).frame(height: 22).hubCard(7)
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -63,7 +101,11 @@ struct ShelfTab: View {
         .onDrop(of: [.fileURL, .item], isTargeted: $targeted) { providers in
             shelf.handleDrop(providers)
         }
-        .onAppear { installKeyMonitor() }
+        .onAppear {
+            if state.keyboardMode, let first = shown.first { selection.id = first.id; selection.ids = [first.id] }
+            installKeyMonitor()
+        }
+        .hubOnChange(of: query) { _ in selection.ids.removeAll(); selection.id = nil }
         .onDisappear { removeKeyMonitor() }
     }
 
@@ -77,21 +119,28 @@ struct ShelfTab: View {
                           ? "Отпускайте — заберу"
                           : "Бросьте файлы сюда.\nСкриншоты попадают сами")
             } else {
+                ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 8) {
-                        ForEach(shelf.items) { item in
+                        ForEach(shown) { item in
                             ShelfCard(item: item,
                                       image: shelf.thumbnails[item.id],
-                                      selected: selection.id == item.id,
-                                      onSelect: { selection.id = item.id },
+                                      selected: selection.ids.contains(item.id),
+                                      onSelect: { select(item) },
+                                      dragURLs: { selected.contains(where: { $0.id == item.id }) ? selected.map(\.url) : [item.url] },
+                                      onPin: { shelf.togglePin(item) },
+                                      onPreview: { ShelfPreview.shared.show([item.url]) },
                                       onOpen: { shelf.open(item) },
                                       onReveal: { shelf.reveal(item) },
                                       onDelete: { delete(item) })
+                                .id(item.id)
                                 .onAppear { shelf.requestThumbnail(item) }
                         }
                     }
                     .padding(.horizontal, 2)
                     .frame(maxHeight: .infinity)
+                }
+                .hubOnChange(of: selection.id) { id in if let id { proxy.scrollTo(id) } }
                 }
             }
         }
@@ -107,6 +156,7 @@ struct ShelfTab: View {
     // MARK: — действия
 
     private func delete(_ item: ShelfItem) {
+        selection.ids.remove(item.id)
         if selection.id == item.id { selection.id = nil }
         withAnimation(Theme.quick) { shelf.remove(item) }
         Haptics.tap()
@@ -123,16 +173,19 @@ struct ShelfTab: View {
                 var swallowed = false
                 // Событие наружу из assumeIsolated не выносим: NSEvent несендабельный.
                 MainActor.assumeIsolated {
-                    guard let id = selection.id,
-                          let item = shelf.items.first(where: { $0.id == id }) else { return }
+                    guard NSApp.keyWindow is NotchPanel,
+                          !(NSApp.keyWindow?.firstResponder is NSTextView) else { return }
                     switch code {
-                    case 51, 117:   // ⌫ и ⌦
-                        selection.id = nil
-                        withAnimation(Theme.quick) { shelf.remove(item) }
-                        Haptics.tap()
-                        swallowed = true
-                    case 36, 76:    // ⏎ на основной клавиатуре и на цифровой
-                        shelf.open(item)
+                    case 123, 126: move(-1); swallowed = true
+                    case 124, 125: move(1); swallowed = true
+                    case 49: previewSelection(); swallowed = true
+                    case 0 where event.modifierFlags.contains(.command):
+                        selection.ids = Set(shown.map(\.id)); swallowed = true
+                    case 51, 117:
+                        shelf.remove(ids: selection.ids)
+                        selection.ids.removeAll(); selection.id = nil; swallowed = true
+                    case 36, 76:
+                        if let item = selected.first ?? shown.first { shelf.open(item) }
                         swallowed = true
                     default:
                         break
@@ -155,6 +208,9 @@ private struct ShelfCard: View {
     let image: NSImage?
     let selected: Bool
     let onSelect: () -> Void
+    let dragURLs: () -> [URL]
+    let onPin: () -> Void
+    let onPreview: () -> Void
     let onOpen: () -> Void
     let onReveal: () -> Void
     let onDelete: () -> Void
@@ -165,32 +221,41 @@ private struct ShelfCard: View {
     private static let previewHeight: CGFloat = 84
 
     var body: some View {
-        VStack(spacing: 0) {
-            preview
-            footer
-        }
-        .frame(width: Self.width)
-        .hubCard(12)
-        // Наложения заданы значением, а не замыканием: форма с @ViewBuilder
-        // появилась только в macOS 12, а эта есть с самого SwiftUI.
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(selected ? Theme.accent : (hovering ? Color.white.opacity(0.22) : .clear),
-                              lineWidth: selected ? 1.5 : 1)
-        )
-        .overlay(
-            ShelfDragArea(url: item.url,
-                          preview: image,
-                          deleteCornerActive: hovering || selected,
-                          onHover: { hovering = $0 },
-                          onClick: onSelect,
-                          onOpen: onOpen,
-                          onReveal: onReveal,
-                          onDelete: onDelete)
-        )
-        .overlay(deleteBadge, alignment: .topTrailing)
-        .animation(Theme.quick, value: hovering)
-        .animation(Theme.quick, value: selected)
+        cardContent
+            .overlay(dragArea)
+            .overlay(deleteBadge, alignment: .topTrailing)
+            .animation(Theme.quick, value: hovering)
+            .animation(Theme.quick, value: selected)
+            .help(expiryLabel)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(item.name + ", " + expiryLabel)
+            .accessibilityAction { onOpen() }
+            .accessibilityAction(named: Text("Быстрый просмотр")) { onPreview() }
+            .accessibilityAction(named: Text(item.isPinned ? "Открепить" : "Закрепить")) { onPin() }
+    }
+
+    private var cardContent: some View {
+        VStack(spacing: 0) { preview; footer }
+            .frame(width: Self.width)
+            .hubCard(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(
+                selected ? Theme.accent : (hovering ? Color.white.opacity(0.22) : .clear),
+                lineWidth: selected ? 1.5 : 1))
+    }
+    private var dragArea: some View {
+        ShelfDragArea(url: item.url, dragURLs: dragURLs, isPinned: item.isPinned,
+                      onPin: onPin, onPreview: onPreview, preview: image,
+                      deleteCornerActive: hovering || selected,
+                      onHover: { hovering = $0 }, onClick: onSelect,
+                      onOpen: onOpen, onReveal: onReveal, onDelete: onDelete)
+    }
+
+    private var expiryLabel: String {
+        if item.isPinned { return "Закреплён — не удаляется автоматически" }
+        let days = Settings.shared.shelfRetentionDays
+        guard days > 0 else { return "Без автоочистки" }
+        let left = max(0, Int(ceil(item.added.addingTimeInterval(Double(days) * 86400).timeIntervalSinceNow / 86400)))
+        return left == 0 ? "Ожидает переноса в Корзину" : (left == 1 ? "В Корзину в течение суток" : "В Корзину через \(left) дн.")
     }
 
     private var preview: some View {
@@ -219,6 +284,7 @@ private struct ShelfCard: View {
                 .truncationMode(.middle)
                 .hubForeground(.white.opacity(0.9))
             HStack(spacing: 3) {
+                if item.isPinned { Image(systemName: "pin.fill").font(.system(size: 8)) }
                 if item.isScreenshot {
                     Image(systemName: "camera.viewfinder").font(.system(size: 8, weight: .semibold))
                 }
@@ -227,6 +293,7 @@ private struct ShelfCard: View {
                     .lineLimit(1)
             }
             .hubForeground(Theme.secondaryText)
+            Text(expiryLabel).font(.system(size: 8)).hubForeground(Theme.secondaryText).lineLimit(1)
         }
         .frame(width: Self.width - 12, alignment: .leading)
         .padding(.horizontal, 6)

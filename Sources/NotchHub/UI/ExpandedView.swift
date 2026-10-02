@@ -42,7 +42,7 @@ struct TabColumn: View {
         // Ни распорки, ни вертикальных отступов: колонку по высоте центрует
         // сам HStack панели. С распоркой внизу иконки прижимались к верху.
         VStack(spacing: Theme.tabSpacing) {
-            ForEach(NotchTab.available) { tab in
+            ForEach(state.orderedTabs) { tab in
                 TabButton(tab: tab, selected: state.selectedTab == tab, badge: badge(for: tab)) {
                     withAnimation(Theme.quick) { state.selectedTab = tab }
                 }
@@ -94,6 +94,8 @@ private struct TabButton: View {
         }
         .buttonStyle(.plain)
         .help(tab.title)
+        .accessibilityLabel(tab.title)
+        .accessibilityValue(selected ? "Выбрана" : "")
         .onHover { hovering = $0 }
     }
 }

@@ -71,6 +71,14 @@ private struct MediaImageBox: @unchecked Sendable {
         return min(1, max(0, elapsed / d))
     }
 
+    var statusMessage: String {
+        switch backend {
+        case .none: return running ? "Музыка: подключение к проигрывателю…" : "Музыка: остановлена"
+        case .adapter: return track == nil ? "Музыка: источник подключён, трек не передаётся" : "Музыка: " + sourceName
+        case .appleScript: return "Музыка: резервный режим (Apple Music и Spotify)"
+        }
+    }
+
     private var adapter: MediaAdapterRunner?
     private var script: MediaAppleScriptBridge?
     private var probe: Task<Void, Never>?
