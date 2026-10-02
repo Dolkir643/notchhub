@@ -1,0 +1,27 @@
+name: Build and test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Select Xcode
+        run: echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
+      - run: xcrun swift test
+      - name: Check Big Sur compatibility
+        run: MACOS11=1 xcrun swift build --scratch-path .build-legacy
+      - name: Verify distribution profiles
+        run: |
+          for profile in notch no-notch legacy; do
+            NOTCHHUB_VARIANT="$profile" ./Scripts/dmg.sh
+          done

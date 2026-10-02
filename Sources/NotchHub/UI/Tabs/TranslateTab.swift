@@ -248,12 +248,15 @@ private struct TranslatorEngine: View {
         let text = service.query
         guard !text.isEmpty else { return }
         let direction = service.direction
+        let revision = service.revision
         let source = Locale.Language(identifier: direction.sourceCode)
         let target = Locale.Language(identifier: direction.targetCode)
         let pair = "\(direction.sourceLabel) → \(direction.targetLabel)"
         // Пока ждали систему, текст могли сменить — тогда ответ и ошибка уже не наши
         // и затирать ими свежее состояние нельзя.
-        func isCurrent() -> Bool { !Task.isCancelled && service.query == text }
+        func isCurrent() -> Bool {
+            !Task.isCancelled && service.query == text && service.direction == direction && service.revision == revision
+        }
 
         switch await LanguageAvailability().status(from: source, to: target) {
         case .installed:

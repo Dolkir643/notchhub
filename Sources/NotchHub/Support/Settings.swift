@@ -7,6 +7,8 @@ import Combine
 
     private let d = UserDefaults.standard
     private var loading = true
+    @Published var tabOrder: [String] = [] { didSet { persist(\.tabOrder, "tabOrder", tabOrder) } }
+    @Published var onboardingComplete = false { didSet { persist(\.onboardingComplete, "onboardingComplete", onboardingComplete) } }
 
     /// Автозапуск (SMAppService.mainApp). По умолчанию выключен.
     @Published var launchAtLogin: Bool = false { didSet { persist(\.launchAtLogin, "launchAtLogin", launchAtLogin) } }
@@ -50,6 +52,8 @@ import Combine
     @Published var openOnHover: Bool = true { didSet { persist(\.openOnHover, "openOnHover", openOnHover) } }
 
     private init() {
+        tabOrder = d.stringArray(forKey: "tabOrder") ?? []
+        onboardingComplete = d.bool(forKey: "onboardingComplete")
         if d.object(forKey: "launchAtLogin") != nil { launchAtLogin = d.bool(forKey: "launchAtLogin") }
         if d.object(forKey: "shelfRetentionDays") != nil { shelfRetentionDays = d.integer(forKey: "shelfRetentionDays") }
         if d.object(forKey: "autoScreenshots") != nil { autoScreenshots = d.bool(forKey: "autoScreenshots") }

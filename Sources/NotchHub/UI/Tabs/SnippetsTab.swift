@@ -9,6 +9,7 @@ struct SnippetsTab: View {
     /// Строка, открытая на правку. Черновик живёт здесь, в хранилище уходит при сохранении.
     @State private var draft: Draft?
     @State private var copiedID: UUID?
+    @State private var selectedID: UUID?
     @State private var copyTask: Task<Void, Never>?
 
     private struct Draft: Equatable {
@@ -35,6 +36,13 @@ struct SnippetsTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             TabHeader(title: "Заготовки") {
+                Menu {
+                    Button("Импортировать…", action: importSnippets)
+                    Button("Экспортировать…", action: exportSnippets)
+                } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton)
+                .frame(width: 25)
+                .disabled(!store.isReady)
                 Button(action: addNew) {
                     Image(systemName: "plus")
                         .font(.system(size: 11, weight: .bold))
@@ -44,6 +52,13 @@ struct SnippetsTab: View {
                 }
                 .buttonStyle(.plain)
                 .help("Новая заготовка")
+                .disabled(!store.isReady)
+            }
+            if let error = store.errorMessage {
+                HStack {
+                    Text(error).font(.system(size: 10)).hubForeground(.orange).lineLimit(2)
+                    Button("Повторить") { store.isReady ? store.save() : store.start() }
+                }
             }
             search
             list
@@ -64,13 +79,13 @@ struct SnippetsTab: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 10, weight: .medium))
                 .hubForeground(.white.opacity(0.4))
-            SnippetField(
-                text: Binding(get: { store.query }, set: { store.query = $0 }),
-                placeholder: "Поиск по названию и значению",
-                fontSize: 11,
-                resignsOnEscape: true,
-                onCancel: { store.query = "" }
-            )
+            HubSearchField(text: Binding(get: { store.query }, set: { store.query = $0 }),
+                           placeholder: "Поиск по названию и значению", autofocus: state.keyboardMode,
+                           onMove: moveSelection, onSubmit: {
+                               if let item = visible.first(where: { $0.id == selectedID }) ?? visible.first {
+                                   tap(item); state.collapse(immediate: true)
+                               }
+                           })
             if !store.query.isEmpty {
                 Button {
                     store.query = ""
@@ -110,11 +125,14 @@ struct SnippetsTab: View {
                     VStack(spacing: 4) {
                         ForEach(rows) { snippet in
                             row(snippet).id(snippet.id)
+                                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(
+                                    draft == nil && state.keyboardMode && (selectedID ?? visible.first?.id) == snippet.id ? Theme.accent : .clear))
                         }
                     }
                     .padding(.bottom, 2)
                 }
                 .hubHideScrollIndicators()
+                .hubOnChange(of: selectedID) { id in if let id { proxy.scrollTo(id) } }
                 .snippetsOnChange(of: draft?.id) { id in
                     guard let id else { return }
                     withAnimation(Theme.quick) { proxy.scrollTo(id, anchor: .bottom) }
@@ -143,40 +161,51 @@ struct SnippetsTab: View {
     // MARK: — редактор строки
 
     private func editor(_ snippet: Snippet) -> some View {
-        HStack(spacing: 8) {
-            SnippetField(
-                text: bind(\.title),
-                placeholder: "Название",
-                fontSize: 12,
-                bold: true,
-                autofocus: draft?.focusValue == false,
-                onSubmit: { commit(closing: true) },
-                onCancel: cancel,
-                onBlur: { commit(closing: false) }
-            )
-            .frame(width: 150)
-
-            Rectangle().fill(Color.white.opacity(0.12)).frame(width: 1, height: 14)
-
-            SnippetField(
-                text: bind(\.value),
-                placeholder: "Значение",
-                fontSize: 11,
-                autofocus: draft?.focusValue == true,
-                onSubmit: { commit(closing: true) },
-                onCancel: cancel,
-                onBlur: { commit(closing: false) }
-            )
-            .frame(maxWidth: .infinity)
-
-            iconButton("checkmark", hint: "Сохранить") { commit(closing: true) }
-            iconButton("trash", hint: "Удалить") { remove(snippet) }
+        VStack(spacing: 6) {
+            HStack {
+                SnippetField(text: bind(\.title), placeholder: "Название", fontSize: 12, bold: true,
+                             autofocus: draft?.focusValue == false,
+                             onSubmit: { commit(closing: true) }, onCancel: cancel)
+                iconButton("checkmark", hint: "Сохранить") { commit(closing: true) }
+                iconButton("xmark", hint: "Отменить", action: cancel)
+            }
+            TextEditor(text: bind(\.value))
+                .font(.system(size: 12)).hubForeground(.white)
+                .hubClearScrollBackground()
+                .frame(height: 90)
+                .accessibilityLabel("Текст заготовки")
         }
-        .padding(.horizontal, 10)
-        .frame(height: 28)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.accent.opacity(0.14)))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .strokeBorder(Theme.accent.opacity(0.45), lineWidth: 1))
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.accent.opacity(0.14)))
+    }
+
+    private func moveSelection(_ delta: Int) {
+        let rows = visible
+        guard !rows.isEmpty else { return }
+        let index = rows.firstIndex { $0.id == selectedID } ?? 0
+        selectedID = rows[max(0, min(rows.count - 1, index + delta))].id
+    }
+
+    private func importSnippets() {
+        state.isPresentingDialog = true
+        defer { state.isPresentingDialog = false }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try store.importData(Data(contentsOf: url)); state.flash("Заготовки импортированы") }
+        catch { state.flash("Не удалось прочитать файл заготовок") }
+    }
+
+    private func exportSnippets() {
+        state.isPresentingDialog = true
+        defer { state.isPresentingDialog = false }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "Заготовки NotchHub.json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try store.exportData().write(to: url, options: .atomic); state.flash("Заготовки экспортированы") }
+        catch { state.flash("Не удалось сохранить файл") }
     }
 
     private func iconButton(_ icon: String, hint: String, action: @escaping () -> Void) -> some View {
@@ -245,7 +274,7 @@ struct SnippetsTab: View {
     private func commit(closing: Bool) {
         guard let current = draft else { return }
         let title = current.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let value = current.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = current.value
 
         if closing, title.isEmpty, value.isEmpty {
             if let stored = store.snippets.first(where: { $0.id == current.id }) { store.delete(stored) }

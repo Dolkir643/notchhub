@@ -6,6 +6,10 @@ import SwiftUI
 /// срабатывает через раз, поэтому всё держим на AppKit.
 struct ShelfDragArea: NSViewRepresentable {
     let url: URL
+    let dragURLs: () -> [URL]
+    let isPinned: Bool
+    let onPin: () -> Void
+    let onPreview: () -> Void
     let preview: NSImage?
     /// Показан ли крестик удаления: только тогда угол карточки работает на удаление.
     let deleteCornerActive: Bool
@@ -45,6 +49,10 @@ struct ShelfDragArea: NSViewRepresentable {
 
     private func apply(to view: ShelfDragSourceView) {
         view.url = url
+        view.dragURLs = dragURLs
+        view.isPinned = isPinned
+        view.onPin = onPin
+        view.onPreview = onPreview
         view.preview = preview
         view.deleteCornerActive = deleteCornerActive
         view.onHover = onHover
@@ -59,6 +67,10 @@ struct ShelfDragArea: NSViewRepresentable {
 /// поэтому он же отвечает за наведение и за крестик в углу.
 final class ShelfDragSourceView: NSView, NSDraggingSource {
     var url: URL?
+    var dragURLs: (() -> [URL])?
+    var isPinned = false
+    var onPin: (() -> Void)?
+    var onPreview: (() -> Void)?
     var preview: NSImage?
     var deleteCornerActive = false
     var onHover: ((Bool) -> Void)?
@@ -147,6 +159,8 @@ final class ShelfDragSourceView: NSView, NSDraggingSource {
         onClick?()
         let menu = NSMenu()
         menu.addItem(item(title: "Открыть", action: #selector(menuOpen)))
+        menu.addItem(item(title: "Быстрый просмотр", action: #selector(menuPreview)))
+        menu.addItem(item(title: isPinned ? "Открепить" : "Закрепить", action: #selector(menuPin)))
         menu.addItem(item(title: "Показать в Finder", action: #selector(menuReveal)))
         menu.addItem(.separator())
         menu.addItem(item(title: "Убрать с полки", action: #selector(menuDelete)))
@@ -159,6 +173,8 @@ final class ShelfDragSourceView: NSView, NSDraggingSource {
         return entry
     }
 
+    @objc private func menuPin() { onPin?() }
+    @objc private func menuPreview() { onPreview?() }
     @objc private func menuOpen() { onOpen?() }
     @objc private func menuReveal() { onReveal?() }
     @objc private func menuDelete() { onDelete?() }
@@ -170,13 +186,13 @@ final class ShelfDragSourceView: NSView, NSDraggingSource {
     // MARK: — перетаскивание наружу
 
     private func beginDrag(of url: URL, with event: NSEvent) {
-        let pasteboardItem = NSPasteboardItem()
-        pasteboardItem.setString(url.absoluteString, forType: .fileURL)
-
-        let dragItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        // Без картинки за курсором тащится пустота.
-        let image = preview ?? Self.fileIcon(for: url)
-        dragItem.setDraggingFrame(fitted(image), contents: image)
+        let urls = dragURLs?() ?? [url]
+        let dragItems = urls.enumerated().map { index, file in
+            let dragItem = NSDraggingItem(pasteboardWriter: file as NSURL)
+            let image = urls.count == 1 ? (preview ?? Self.fileIcon(for: file)) : Self.fileIcon(for: file)
+            dragItem.setDraggingFrame(fitted(image).offsetBy(dx: CGFloat(index % 5) * 5, dy: CGFloat(index % 5) * 5), contents: image)
+            return dragItem
+        }
 
         // Держим панель раскрытой ДО старта сессии: курсор уходит из чёлки в первые
         // же миллисекунды, а схлопывание там заряжено на 100 мс — на `willBeginAt`
@@ -184,7 +200,7 @@ final class ShelfDragSourceView: NSView, NSDraggingSource {
         keepPanelOpen()
         sessionHold = self
 
-        let session = beginDraggingSession(with: [dragItem], event: event, source: self)
+        let session = beginDraggingSession(with: dragItems, event: event, source: self)
         session.animatesToStartingPositionsOnCancelOrFail = true
     }
 

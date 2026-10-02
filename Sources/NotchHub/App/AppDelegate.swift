@@ -3,6 +3,8 @@ import SwiftUI
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
 
+    private var terminationReady = false
+    private var terminationTask: Task<Void, Never>?
     private var signalSources: [DispatchSourceSignal] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -14,6 +16,9 @@ import SwiftUI
         Log.app.info("NotchHub запущен из \(Bundle.main.bundlePath, privacy: .public)")
         Log.app.info("автозапуск: \(String(describing: LoginItem.state), privacy: .public)")
         startDemoIfRequested()
+        if !Settings.shared.onboardingComplete {
+            AppState.shared.expand(keyboard: true)
+        }
     }
 
     // ВРЕМЕННОЕ: держит панель раскрытой для снятия скриншотов при доводке вида.
@@ -45,6 +50,20 @@ import SwiftUI
             source.resume()
             signalSources.append(source)
         }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationReady { return .terminateNow }
+        guard terminationTask == nil else { return .terminateCancel }
+        // terminateLater enters a nested AppKit loop; when invoked from a main
+        // dispatch signal handler it prevents MainActor tasks from finishing.
+        terminationTask = Task {
+            await AppState.shared.snippets.waitUntilReady()
+            await AppState.shared.snippets.waitUntilSaved()
+            terminationReady = true
+            sender.terminate(nil)
+        }
+        return .terminateCancel
     }
 
     func applicationWillTerminate(_ notification: Notification) {

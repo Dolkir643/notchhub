@@ -142,7 +142,14 @@ private struct CalHeroCard: View {
             }
 
             Spacer(minLength: 8)
-            CalStatusChip(event: event, now: now)
+            VStack(alignment: .trailing, spacing: 6) {
+                CalStatusChip(event: event, now: now)
+                if let url = event.meetingURL {
+                    Link("Подключиться", destination: url)
+                        .font(.system(size: 11, weight: .semibold))
+                        .help(url.host ?? "Открыть встречу")
+                }
+            }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -155,6 +162,11 @@ private struct CalHeroCard: View {
         .onHover { hovering = $0 }
         .onTapGesture(perform: onOpen)
         .help("Открыть в Календаре")
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(named: Text("Открыть событие"), onOpen)
+        .contextMenu {
+            if let url = event.meetingURL { Link("Подключиться к встрече", destination: url) }
+        }
     }
 }
 

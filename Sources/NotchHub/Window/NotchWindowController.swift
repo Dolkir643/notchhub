@@ -15,6 +15,7 @@ import SwiftUI
     private var moveMonitors: [Any] = []
     private var clickMonitor: Any?
     private var localClickMonitor: Any?
+    private var keyMonitor: Any?
     private var pollTimer: Timer?
     private var lastInsideKey: String?
     private var lastPoint: CGPoint?
@@ -64,7 +65,7 @@ import SwiftUI
             let geo = ScreenGeometry.geometry(of: screen)
             let frame = windowFrame(for: geo, on: screen)
             let panel = NotchPanel(contentRect: frame)
-            panel.acceptsKeyInput = AppState.shared.isExpanded
+            panel.acceptsKeyInput = AppState.shared.isExpanded(on: geo.screenFrame)
             let host = NotchHostingView(rootView: RootView(geometry: geo)
                 .environmentObject(AppState.shared))
             host.frame = CGRect(origin: .zero, size: frame.size)
@@ -74,6 +75,11 @@ import SwiftUI
             panel.orderFrontRegardless()
             entries.append(Entry(panel: panel, geometry: geo))
         }
+        if AppState.shared.isExpanded,
+           !entries.contains(where: { AppState.shared.isExpanded(on: $0.geometry.screenFrame) }) {
+            AppState.shared.expand(screenID: preferredScreenID)
+        }
+        if AppState.shared.keyboardMode { focusActivePanel() }
         Log.window.info("Чёлок создано: \(self.entries.count, privacy: .public)")
     }
 
@@ -100,9 +106,23 @@ import SwiftUI
         }
     }
 
+    var preferredScreenID: String? {
+        let point = NSEvent.mouseLocation
+        return entries.first { contains($0.geometry.screenFrame, point) }
+            .map { NSStringFromRect($0.geometry.screenFrame) }
+            ?? entries.first.map { NSStringFromRect($0.geometry.screenFrame) }
+    }
+
+    func focusActivePanel() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, AppState.shared.keyboardMode else { return }
+            self.entries.first { AppState.shared.isExpanded(on: $0.geometry.screenFrame) }?.panel.makeKey()
+        }
+    }
+
     /// Разрешить панели принимать клавиатурный ввод (только в раскрытом виде).
     func setKeyInputAllowed(_ allowed: Bool) {
-        for e in entries { e.panel.acceptsKeyInput = allowed }
+        for e in entries { e.panel.acceptsKeyInput = allowed && AppState.shared.activeScreenID == NSStringFromRect(e.geometry.screenFrame) }
         if !allowed, let key = NSApp.keyWindow as? NotchPanel {
             key.orderFrontRegardless()
         }
@@ -111,6 +131,14 @@ import SwiftUI
     // MARK: — отслеживание курсора
 
     private func installMonitors() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard NSApp.keyWindow is NotchPanel, event.modifierFlags.contains(.command),
+                  let character = event.charactersIgnoringModifiers, let number = Int(character) else { return event }
+            let tabs = AppState.shared.orderedTabs
+            guard (1...tabs.count).contains(number) else { return event }
+            AppState.shared.selectedTab = tabs[number - 1]
+            return nil
+        }
         let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged]
         if let g = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
             MainActor.assumeIsolated { self?.updateHover() }
@@ -228,6 +256,7 @@ import SwiftUI
     /// Ключ экрана, в чью активную зону попал курсор, либо nil.
     private func zoneKey(for point: CGPoint) -> String? {
         for e in entries where contains(activeRect(for: e.geometry), point) {
+            if AppState.shared.isExpanded && !AppState.shared.isExpanded(on: e.geometry.screenFrame) { continue }
             // На экране без выреза наведение лишь показывает индикатор.
             // Клик и drag & drop обрабатывает компактная вью у самой кромки.
             if e.geometry.usesEdgeTrigger && !AppState.shared.isExpanded { continue }
