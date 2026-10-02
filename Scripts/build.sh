@@ -54,19 +54,22 @@ ADAPTER_BUILD="$ROOT/build/adapter-$MIN_MACOS"
 # 2. Swift --------------------------------------------------------------------
 # UNIVERSAL=1 — собрать под обе архитектуры (для раздачи на другие маки).
 # По умолчанию только своя: универсальная сборка вдвое дольше.
-ARCH_FLAGS=()
-if [ "${UNIVERSAL:-0}" = "1" ]; then
-    ARCH_FLAGS=(--arch arm64 --arch x86_64)
-    say "swift build -c $CONFIG (arm64 + x86_64)"
-else
-    say "swift build -c $CONFIG"
-fi
 cd "$ROOT"
-# `${x[@]+"${x[@]}"}` вместо простого `"${x[@]}"`: в штатном bash 3.2 из macOS
-# раскрытие пустого массива под `set -u` считается обращением к незаданной
-# переменной и рубит сборку. Ловится только при вызове без UNIVERSAL=1.
-xcrun swift build -c "$CONFIG" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}
-BIN="$(xcrun swift build -c "$CONFIG" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)/NotchHub"
+if [ "${UNIVERSAL:-0}" = "1" ]; then
+    # Separate native SwiftPM builds avoid Xcode 16's broken multi-architecture
+    # package graph (empty SWIFT_VERSION / duplicate output tasks).
+    for arch in arm64 x86_64; do
+        scratch="$ROOT/.build/dist-$MIN_MACOS-$arch"
+        xcrun swift build -c "$CONFIG" --arch "$arch" --scratch-path "$scratch"
+        arch_bin="$(xcrun swift build -c "$CONFIG" --arch "$arch" --scratch-path "$scratch" --show-bin-path)/NotchHub"
+        cp "$arch_bin" "$ROOT/build/NotchHub-$arch"
+    done
+    BIN="$ROOT/build/NotchHub-universal"
+    lipo -create "$ROOT/build/NotchHub-arm64" "$ROOT/build/NotchHub-x86_64" -output "$BIN"
+else
+    xcrun swift build -c "$CONFIG"
+    BIN="$(xcrun swift build -c "$CONFIG" --show-bin-path)/NotchHub"
+fi
 
 # 3. Бандл --------------------------------------------------------------------
 say "Собираю $APP"
@@ -110,7 +113,7 @@ if otool -L "$EXE" | grep -q "@rpath/libswift_Concurrency.dylib"; then
     # и под `set -e` молча обрывает сборку на этом месте.
     STALE_RPATHS="$(otool -l "$EXE" \
         | awk '/LC_RPATH/{f=1} f&&/path /{print $2; f=0}' \
-        | grep -F "/Xcode.app/" || true)"
+        | grep -F "/Toolchains/" || true)"
     for stale in $STALE_RPATHS; do
         install_name_tool -delete_rpath "$stale" "$EXE" 2>/dev/null || true
     done

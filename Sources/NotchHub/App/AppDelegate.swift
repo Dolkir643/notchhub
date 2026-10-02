@@ -3,6 +3,8 @@ import SwiftUI
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
 
+    private var terminationReady = false
+    private var terminationTask: Task<Void, Never>?
     private var signalSources: [DispatchSourceSignal] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -51,12 +53,17 @@ import SwiftUI
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        Task {
+        if terminationReady { return .terminateNow }
+        guard terminationTask == nil else { return .terminateCancel }
+        // terminateLater enters a nested AppKit loop; when invoked from a main
+        // dispatch signal handler it prevents MainActor tasks from finishing.
+        terminationTask = Task {
             await AppState.shared.snippets.waitUntilReady()
             await AppState.shared.snippets.waitUntilSaved()
-            sender.reply(toApplicationShouldTerminate: true)
+            terminationReady = true
+            sender.terminate(nil)
         }
-        return .terminateLater
+        return .terminateCancel
     }
 
     func applicationWillTerminate(_ notification: Notification) {
