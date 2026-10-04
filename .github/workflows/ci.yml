@@ -71,3 +71,39 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+  release-draft:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download verified distribution files
+        uses: actions/download-artifact@v4
+        with:
+          name: NotchHub-${{ github.sha }}
+          path: dist
+      - name: Verify release identity and checksums
+        shell: bash
+        run: |
+          version="$(python3 -c 'import plistlib; print(plistlib.load(open("Resources/Info.plist", "rb"))["CFBundleShortVersionString"])')"
+          test "$GITHUB_REF_NAME" = "v$version"
+          test "$(cat dist/COMMIT.txt)" = "$GITHUB_SHA"
+          test -s "docs/releases/$GITHUB_REF_NAME.md"
+          cd dist
+          for profile in notch no-notch macOS11; do
+            test -s "NotchHub-$version-$profile.dmg"
+            sha256sum -c "NotchHub-$version-$profile.dmg.sha256"
+          done
+      - name: Create release draft with installation files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.dmg.sha256 \
+            --draft --verify-tag --title "NotchHub ${GITHUB_REF_NAME#v}" \
+            --notes-file "docs/releases/$GITHUB_REF_NAME.md"
