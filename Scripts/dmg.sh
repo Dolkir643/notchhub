@@ -33,8 +33,7 @@ if [ "$VARIANT" = "legacy" ]; then
 ОСОБЕННОСТИ СБОРКИ ДЛЯ СТАРЫХ СИСТЕМ
     • вкладки «Переводчик» нет — системный переводчик появился в macOS 15;
     • на macOS 11–12 автозапуск делается своим LaunchAgent и не показывается
-      в «Объектах входа»;
-    • на macOS 11 нет автофокуса в полях ввода — кликните в поле мышью.
+      в «Объектах входа».
 "
 else
     DMG="$ROOT/build/NotchHub-$VERSION-$VARIANT.dmg"
@@ -109,6 +108,9 @@ rm -rf "$STAGE"
 
 say "Проверяю образ"
 hdiutil verify "$DMG" >/dev/null && echo "    контрольная сумма в порядке"
+
+"$ROOT/Scripts/verify-dmg.sh" "$DMG" "$VARIANT"
+(cd "$ROOT/build" && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
 
 SIZE="$(du -h "$DMG" | cut -f1)"
 say "Готово: $DMG ($SIZE)"

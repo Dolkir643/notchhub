@@ -11,10 +11,14 @@ struct ShelfItem: Identifiable, Codable, Equatable, Sendable {
     /// Подпапка внутри Shelf/: <UUID>/<имя файла>
     var relativePath: String
     var isScreenshot: Bool
-    var isPinned = false
+    var pinned: Bool? = nil
+    var isPinned: Bool {
+        get { pinned == true }
+        set { pinned = newValue }
+    }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, size, added, relativePath, isScreenshot, isPinned
+        case id, name, size, added, relativePath, isScreenshot, pinned, isPinned
     }
 
     var url: URL { AppPaths.shelf.appendingPathComponent(relativePath) }
@@ -24,7 +28,7 @@ struct ShelfItem: Identifiable, Codable, Equatable, Sendable {
 }
 
 extension ShelfItem {
-    /// Старый индекс не содержит закрепления. Не теряем его при обновлении.
+    /// Читаем закрепление из обеих версий индекса; у старых файлов его нет.
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(UUID.self, forKey: .id)
@@ -33,12 +37,25 @@ extension ShelfItem {
         added = try values.decode(Date.self, forKey: .added)
         relativePath = try values.decode(String.self, forKey: .relativePath)
         isScreenshot = try values.decode(Bool.self, forKey: .isScreenshot)
-        isPinned = try values.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        pinned = try values.decodeIfPresent(Bool.self, forKey: .pinned)
+            ?? values.decodeIfPresent(Bool.self, forKey: .isPinned)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(name, forKey: .name)
+        try values.encode(size, forKey: .size)
+        try values.encode(added, forKey: .added)
+        try values.encode(relativePath, forKey: .relativePath)
+        try values.encode(isScreenshot, forKey: .isScreenshot)
+        try values.encodeIfPresent(pinned, forKey: .pinned)
     }
 }
 
 /// Полка: приём drag&drop, перетаскивание наружу, автоподхват скриншотов.
 @MainActor final class ShelfService: ObservableObject {
+    @Published private(set) var screenshotStatus = "Скриншоты: подключение…"
     @Published private(set) var items: [ShelfItem] = []
     @Published private(set) var thumbnails: [UUID: NSImage] = [:]
     let downloads = ShelfDownloadsService()
@@ -178,9 +195,13 @@ extension ShelfItem {
         let token = generation
         Task { [weak self] in
             guard let self, self.running, self.generation == token else { return }
-            let fresh = await self.importFiles(urls: urls, isScreenshot: isScreenshot)
-            if isScreenshot, !fresh.isEmpty { AppState.shared.flash("Скриншот на полке") }
+            await self.addAndWait(urls: urls, isScreenshot: isScreenshot)
         }
+    }
+
+    func addAndWait(urls: [URL], isScreenshot: Bool = false) async {
+        let fresh = await importFiles(urls: urls, isScreenshot: isScreenshot)
+        if isScreenshot, !fresh.isEmpty { AppState.shared.flash("Скриншот на полке") }
     }
 
     /// Возвращаем только сохранённые элементы: кнопка загрузок может честно
@@ -315,25 +336,17 @@ extension ShelfItem {
     }
 
     /// Автоуборка по возрасту: 0 в настройках — не чистить.
-    private func cleanupExpired() {
+    func cleanupExpired(now: Date = Date(), retentionDays: Int? = nil) {
         guard ready, running else { return }
-        let days = Settings.shared.shelfRetentionDays
+        let days = retentionDays ?? Settings.shared.shelfRetentionDays
         guard days > 0 else { return }
-        let deadline = Date().addingTimeInterval(-Double(days) * 86_400)
-        let expired = items.filter { !$0.isPinned && $0.added < deadline && !removing.contains($0.id) }
-        guard !expired.isEmpty else { return }
+        let deadline = now.addingTimeInterval(-Double(days) * 86_400)
+        trash(items.filter { !$0.isPinned && $0.added < deadline })
+    }
 
-        let expiredIDs = Set(expired.map(\.id))
-        items.removeAll { expiredIDs.contains($0.id) }
-        for item in expired { thumbnails[item.id] = nil }
-        store.save(items)
-
-        // Просроченное сносим молча: оригиналы файлов остались у пользователя.
-        let store = self.store
-        Task.detached(priority: .background) {
-            for item in expired { store.delete(item) }
-        }
-        Log.shelf.info("Автоуборка полки: \(expired.count, privacy: .public)")
+    func remove(ids: Set<UUID>) {
+        guard ready else { return }
+        trash(items.filter { ids.contains($0.id) })
     }
 
     private func trash(_ requested: [ShelfItem]) {
@@ -367,6 +380,7 @@ extension ShelfItem {
         guard enabled else {
             watcher?.stop()
             watcher = nil
+            screenshotStatus = "Автоподхват скриншотов выключен"
             return
         }
         let directory = ShelfScreenshotWatcher.screenshotDirectory()
@@ -376,11 +390,21 @@ extension ShelfItem {
         let fresh = ShelfScreenshotWatcher(directory: directory) { [weak self] url in
             MainActor.assumeIsolated { self?.add(urls: [url], isScreenshot: true) }
         }
-        fresh.start()
-        watcher = fresh
+        if fresh.start() {
+            screenshotStatus = "Скриншоты: папка «\(directory.lastPathComponent)». Снимок только в буфере добавляется через «На полку»."
+            watcher = fresh
+        } else {
+            screenshotStatus = "Не удалось следить за папкой скриншотов. Проверьте доступ к ней."
+            watcher = nil
+        }
     }
 
     /// Каталог снимков можно поменять в любой момент — раз в час сверяемся.
+    func refreshScreenshotWatch() {
+        watcher?.stop(); watcher = nil
+        setScreenshotWatch(Settings.shared.autoScreenshots)
+    }
+
     private func refreshWatchIfDirectoryChanged() {
         guard Settings.shared.autoScreenshots else { return }
         setScreenshotWatch(true)

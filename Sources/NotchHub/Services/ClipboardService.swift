@@ -8,6 +8,7 @@ struct ClipItem: Identifiable, Equatable {
     enum Kind: Equatable {
         case text(String)
         case url(URL)
+        case files([URL])
         case image(NSImage)
     }
 
@@ -27,9 +28,31 @@ struct ClipItem: Identifiable, Equatable {
         self.signature = signature ?? kind.defaultSignature
     }
 
+    var searchableText: String {
+        switch kind {
+        case .text(let text): return text
+        case .files(let urls): return urls.map(\.path).joined(separator: "\n")
+        case .url(let url): return url.isFileURL ? url.path : url.absoluteString
+        case .image: return "Изображение"
+        }
+    }
+    var textValue: String? {
+        switch kind {
+        case .text(let text): return text
+        case .url(let url) where !url.isFileURL: return url.absoluteString
+        default: return nil
+        }
+    }
+    var fileURLs: [URL] {
+        switch kind {
+        case .files(let urls): return urls
+        case .url(let url) where url.isFileURL: return [url]
+        default: return []
+        }
+    }
     var isImage: Bool { if case .image = kind { return true }; return false }
 
-    /// Сколько символов текста показываем и по скольким ищем. В строку влезает
+    /// Сколько символов показываем. Поиск работает отдельно по полному содержимому. В строку влезает
     /// пара сотен, а скопировать могут и мегабайтный лог: и разбор такого текста,
     /// и вёрстка его в `Text` вешают главный поток на каждой перерисовке.
     static let previewLimit = 500
@@ -46,6 +69,7 @@ struct ClipItem: Identifiable, Equatable {
             // В буфер при этом вернётся исходный, закодированный адрес.
             let raw = u.isFileURL ? u.path : u.absoluteString
             return raw.removingPercentEncoding ?? raw
+        case .files(let urls): return "\(urls.count) файлов · " + urls.map(\.lastPathComponent).joined(separator: ", ")
         case .image: return "Изображение"
         }
     }
@@ -54,6 +78,7 @@ struct ClipItem: Identifiable, Equatable {
         switch kind {
         case .text: return "text.alignleft"
         case .url: return "link"
+        case .files: return "doc.on.doc"
         case .image: return "photo"
         }
     }
@@ -67,6 +92,7 @@ extension ClipItem.Kind {
         switch self {
         case .text(let s): return "t:\(s.utf8.count):\(ClipSignature.hash(s))"
         case .url(let u): return "u:\(u.absoluteString)"
+        case .files(let urls): return "f:" + urls.map(\.absoluteString).joined(separator: "\n")
         case .image(let i): return "i:\(UInt(bitPattern: ObjectIdentifier(i).hashValue))"
         }
     }
@@ -98,7 +124,37 @@ enum ClipSignature {
 /// греет систему и заставляет менеджеры паролей считать, что за ними следят.
 /// Всё живёт в памяти — на диск история буфера не пишется.
 @MainActor final class ClipboardService: ObservableObject {
-    @Published private(set) var items: [ClipItem] = []
+    @Published private(set) var items: [ClipItem] = [] { didSet { scheduleSearch() } }
+    @Published var searchQuery = "" { didSet { scheduleSearch() } }
+    @Published private(set) var searchMatches: Set<UUID>?
+    @Published private(set) var isSearching = false
+    private var searchTask: Task<Void, Never>?
+    private var searchRevision = 0
+    var searchResults: [ClipItem] {
+        guard let matches = searchMatches else { return items }
+        return items.filter { matches.contains($0.id) }
+    }
+    func waitForSearch() async { await searchTask?.value }
+    private func scheduleSearch() {
+        searchTask?.cancel()
+        searchRevision &+= 1
+        let revision = searchRevision
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { searchMatches = nil; isSearching = false; return }
+        let documents = items.map { ($0.id, $0.searchableText) }
+        searchMatches = [] // A changed query must never expose a stale row to Enter.
+        isSearching = true
+        searchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            let matches = await Task.detached(priority: .userInitiated) {
+                Set(documents.filter { $0.1.localizedCaseInsensitiveContains(query) }.map { $0.0 })
+            }.value
+            guard !Task.isCancelled, let self, self.searchRevision == revision else { return }
+            self.searchMatches = matches
+            self.isSearching = false
+        }
+    }
 
     /// Метки Pasteboard, которыми 1Password и другие помечают приватные вставки.
     /// Проверяются до чтения содержимого.
@@ -186,8 +242,9 @@ enum ClipSignature {
             return
         }
 
-        if let url = fileURL() {
-            push(kind: .url(url))
+        let urls = fileURLs()
+        if !urls.isEmpty {
+            push(kind: .files(urls))
             return
         }
 
@@ -233,9 +290,9 @@ enum ClipSignature {
         return pasteboard.string(forType: .string)
     }
 
-    private func fileURL() -> URL? {
-        guard let types = pasteboard.types, types.contains(.fileURL) else { return nil }
-        return (NSURL(from: pasteboard) as URL?)?.standardizedFileURL
+    private func fileURLs() -> [URL] {
+        (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])
+            .map(\.standardizedFileURL)
     }
 
     private func webURL(from text: String) -> URL? {
@@ -302,6 +359,7 @@ enum ClipSignature {
             switch item.kind {
             case .text(let text): return text.utf8.count
             case .url(let url): return url.absoluteString.utf8.count
+            case .files(let urls): return urls.reduce(0) { $0 + $1.absoluteString.utf8.count }
             case .image: return 0
             }
         }
@@ -326,6 +384,9 @@ enum ClipSignature {
             // без текстовой метки Cmd-V в любое текстовое поле вставит пустоту.
             pasteboard.writeObjects([u as NSURL])
             pasteboard.setString(u.isFileURL ? u.path : u.absoluteString, forType: .string)
+        case .files(let urls):
+            pasteboard.clearContents()
+            pasteboard.writeObjects(urls.map { $0 as NSURL })
         case .image(let image):
             // Сначала данные, потом clearContents: иначе на битой картинке
             // мы бы просто стёрли пользователю буфер и ничего не положили взамен.

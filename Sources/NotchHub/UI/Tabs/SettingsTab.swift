@@ -43,6 +43,8 @@ struct SettingsTab: View {
                         VStack(alignment: .leading, spacing: 6) {
                             shelfSection
                             clipboardSection
+                            diagnosticsSection
+                            tabOrderSection
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -58,6 +60,44 @@ struct SettingsTab: View {
             approvalWatch?.cancel()
             approvalWatch = nil
         }
+    }
+
+    private var diagnosticsSection: some View {
+        SettingsSection("Помощь и обновления") {
+            Text(state.media.statusMessage).font(.system(size: 10)).hubForeground(Theme.secondaryText)
+            Text(state.shelf.screenshotStatus).font(.system(size: 10)).hubForeground(Theme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            SettingsMiniButton("Перепроверить скриншоты") { state.shelf.refreshScreenshotWatch() }
+            SettingsMiniButton("Проверить обновления") { state.updates.check() }
+                .disabled(state.updates.isChecking)
+            if !state.updates.message.isEmpty {
+                Text(state.updates.message).font(.system(size: 10)).hubForeground(Theme.secondaryText)
+            }
+            if let url = state.updates.releaseURL { Link("Открыть выпуск", destination: url).font(.system(size: 11)) }
+            SettingsMiniButton("Показать подсказки") { settings.onboardingComplete = false }
+        }
+    }
+
+    private var tabOrderSection: some View {
+        SettingsSection("Порядок вкладок") {
+            ForEach(Array(state.orderedTabs.enumerated()), id: \.element.id) { index, tab in
+                HStack {
+                    Text(tab.title).font(.system(size: 10))
+                    Spacer()
+                    Button { moveTab(index, by: -1) } label: { Image(systemName: "chevron.up") }
+                        .disabled(index == 0).help("Выше")
+                    Button { moveTab(index, by: 1) } label: { Image(systemName: "chevron.down") }
+                        .disabled(index == state.orderedTabs.count - 1).help("Ниже")
+                }.buttonStyle(.plain)
+            }
+        }
+    }
+    private func moveTab(_ index: Int, by offset: Int) {
+        var tabs = state.orderedTabs
+        let target = index + offset
+        guard tabs.indices.contains(target) else { return }
+        tabs.swapAt(index, target)
+        settings.tabOrder = tabs.map(\.rawValue)
     }
 
     // MARK: — автозапуск

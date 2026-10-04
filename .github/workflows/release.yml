@@ -1,0 +1,33 @@
+name: Prepare release draft
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-draft
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Select Xcode
+        run: echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
+      - run: xcrun swift test
+      - name: Build and verify all profiles
+        run: |
+          for profile in notch no-notch legacy; do
+            NOTCHHUB_VARIANT="$profile" ./Scripts/dmg.sh
+          done
+      - name: Create draft with checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
+          gh release create "v$version" build/*.dmg build/*.sha256 \
+            --draft --target "$GITHUB_SHA" --title "NotchHub $version" --notes-file CHANGELOG.md

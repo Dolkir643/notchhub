@@ -3,8 +3,9 @@ import SwiftUI
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
 
+    private var terminationReady = false
+    private var terminationTask: Task<Void, Never>?
     private var signalSources: [DispatchSourceSignal] = []
-    private var terminationWait: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
@@ -15,6 +16,9 @@ import SwiftUI
         Log.app.info("NotchHub запущен из \(Bundle.main.bundlePath, privacy: .public)")
         Log.app.info("автозапуск: \(String(describing: LoginItem.state), privacy: .public)")
         startDemoIfRequested()
+        if !Settings.shared.onboardingComplete {
+            AppState.shared.expand(keyboard: true)
+        }
     }
 
     // ВРЕМЕННОЕ: держит панель раскрытой для снятия скриншотов при доводке вида.
@@ -47,34 +51,36 @@ import SwiftUI
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        terminationWait?.cancel()
-        AppState.shared.stopServices()
-    }
-
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if terminationWait != nil { return .terminateLater }
+        if terminationReady { return .terminateNow }
+        guard terminationTask == nil else { return .terminateCancel }
         let awake = AppState.shared.keepAwake
         awake.stop()
-        guard awake.pendingRestoration else { return .terminateNow }
-        // Даём сторожу сеанса вернуть системный сон до обычного выхода.
-        // После аварийного выхода он независимо заметит исчезновение процесса.
-        terminationWait = Task { @MainActor in
+        // Returning terminateCancel lets the main dispatch loop finish a signal
+        // handler while snippets save and the watchdog restores system sleep.
+        terminationTask = Task { @MainActor in
+            await AppState.shared.snippets.waitUntilReady()
+            await AppState.shared.snippets.waitUntilSaved()
             for _ in 0..<100 where awake.pendingRestoration {
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 guard !Task.isCancelled else { return }
             }
-            if awake.pendingRestoration {
-                // Ошибка восстановления должна оставаться видимой: не выдаём
-                // незавершённое изменение питания за успешное закрытие.
-                sender.reply(toApplicationShouldTerminate: false)
-                self.terminationWait = nil
-                AppState.shared.expand(to: .settings)
-            } else {
-                sender.reply(toApplicationShouldTerminate: true)
+            guard !awake.pendingRestoration else {
+                // Leave restoration errors visible instead of reporting a
+                // successful exit with the system setting still overridden.
+                self.terminationTask = nil
+                AppState.shared.expand(to: .settings, keyboard: true)
+                return
             }
+            self.terminationReady = true
+            sender.terminate(nil)
         }
-        return .terminateLater
+        return .terminateCancel
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        terminationTask?.cancel()
+        AppState.shared.stopServices()
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }

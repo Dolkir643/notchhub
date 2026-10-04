@@ -23,6 +23,7 @@ struct ShelfDragArea: NSViewRepresentable {
     var onDeleteSingle: (() -> Void)? = nil
     var onCopy: (() -> Void)? = nil
     var onPin: (() -> Void)? = nil
+    var onPreview: (() -> Void)? = nil
     var pinTitle: (() -> String)? = nil
     var files: (() -> [ShelfDragFile])? = nil
     var canDelete = true
@@ -69,6 +70,7 @@ struct ShelfDragArea: NSViewRepresentable {
         view.onDeleteSingle = onDeleteSingle
         view.onCopy = onCopy
         view.onPin = onPin
+        view.onPreview = onPreview
         view.pinTitle = pinTitle
         view.files = files
     }
@@ -90,6 +92,7 @@ final class ShelfDragSourceView: NSView, NSDraggingSource, NSSharingServicePicke
     var onDeleteSingle: (() -> Void)?
     var onCopy: (() -> Void)?
     var onPin: (() -> Void)?
+    var onPreview: (() -> Void)?
     var pinTitle: (() -> String)?
     var files: (() -> [ShelfDragFile])?
     var canDelete = true
@@ -194,6 +197,9 @@ final class ShelfDragSourceView: NSView, NSDraggingSource, NSSharingServicePicke
         let menu = NSMenu()
         menu.delegate = self
         menu.addItem(item(title: "Открыть", action: #selector(menuOpen)))
+        if onPreview != nil {
+            menu.addItem(item(title: "Быстрый просмотр", action: #selector(menuPreview)))
+        }
         menu.addItem(item(title: "Показать в Finder", action: #selector(menuReveal)))
         if onCopy != nil {
             menu.addItem(item(title: "Копировать", action: #selector(menuCopy)))
@@ -236,6 +242,7 @@ final class ShelfDragSourceView: NSView, NSDraggingSource, NSSharingServicePicke
     @objc private func menuDelete() { onDelete?() }
     @objc private func menuCopy() { onCopy?() }
     @objc private func menuPin() { onPin?() }
+    @objc private func menuPreview() { onPreview?() }
 
     private func select(modifiers: NSEvent.ModifierFlags, preservingGroup: Bool) {
         if let onSelection { onSelection(modifiers, preservingGroup) } else { onClick?() }

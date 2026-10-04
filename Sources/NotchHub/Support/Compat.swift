@@ -71,3 +71,14 @@ extension View {
         overlay(content(), alignment: alignment)
     }
 }
+
+extension View {
+    @ViewBuilder
+    func hubOnChange<Value: Equatable>(of value: Value, perform action: @escaping (Value) -> Void) -> some View {
+        if #available(macOS 14.0, *) {
+            onChange(of: value) { _, updated in action(updated) }
+        } else {
+            onChange(of: value, perform: action)
+        }
+    }
+}

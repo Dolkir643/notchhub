@@ -1,0 +1,73 @@
+name: Build and test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '3'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check Xcode and build tools
+        run: |
+          export DEVELOPER_DIR="$(xcode-select -p)"
+          echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+          xcodebuild -version
+          xcrun swift --version
+          xcrun --sdk macosx --show-sdk-version
+          xcode_major="$(xcodebuild -version | awk '/^Xcode / { split($2, v, "."); print v[1] }')"
+          swift_major="$(xcrun swift --version | sed -n 's/.*Swift version \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          test "${xcode_major:-0}" -ge 16
+          test "${swift_major:-0}" -ge 6
+          if ! command -v cmake >/dev/null 2>&1; then
+            brew install cmake
+          fi
+          cmake --version
+          python3 --version
+      - name: Test watchdog with simulated system commands
+        run: python3 Tests/KeepAwakeWatchdogTests.py
+      - name: Run native macOS tests
+        run: |
+          # Avoid importing desktop screenshots into test shelves on this disposable runner.
+          defaults write NSGlobalDomain autoScreenshots -bool false
+          xcrun swift test --jobs 3
+      - name: Check Big Sur compatibility
+        run: MACOS11=1 xcrun swift build --jobs 3 --scratch-path .build-legacy
+      - name: Build and verify distribution profiles
+        run: |
+          mkdir -p dist
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+          for profile in no-notch notch legacy; do
+            # dmg.sh checks both architectures, deployment targets and signatures inside the DMG.
+            NOTCHHUB_VARIANT="$profile" ./Scripts/dmg.sh
+            suffix="$profile"
+            if [ "$profile" = legacy ]; then suffix=macOS11; fi
+            cp "build/NotchHub-$version-$suffix.dmg" "build/NotchHub-$version-$suffix.dmg.sha256" dist/
+            # Preserve framework symlinks and executable modes when uploading the .app.
+            ditto -c -k --sequesterRsrc --keepParent build/NotchHub.app "dist/NotchHub-$version-$suffix.app.zip"
+          done
+          cp docs/macOS-build.md dist/INSTALL.md
+          git rev-parse HEAD > dist/COMMIT.txt
+          cd dist
+          shasum -a 256 ./*.dmg ./*.zip > SHA256SUMS.txt
+      - name: Upload verified installation files
+        uses: actions/upload-artifact@v4
+        with:
+          name: NotchHub-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

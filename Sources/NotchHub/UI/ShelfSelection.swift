@@ -13,6 +13,8 @@ enum ShelfPage: String, CaseIterable, Identifiable {
 @MainActor final class ShelfSelection: ObservableObject {
     @Published private(set) var ids: Set<UUID> = []
     @Published var page: ShelfPage = .saved
+    @Published var query = ""
+    @Published private(set) var focusedID: UUID?
     private(set) var anchor: UUID?
     weak var window: NSWindow?
     private var monitor: Any?
@@ -21,6 +23,7 @@ enum ShelfPage: String, CaseIterable, Identifiable {
                 preservingGroup: Bool = false) {
         prune(to: orderedIDs)
         guard orderedIDs.contains(id) else { return }
+        focusedID = id
         // Drag и правый клик по выделенному файлу сохраняют всю группу.
         if preservingGroup, ids.contains(id) { return }
         if modifiers.contains(.shift), let anchor,
@@ -40,6 +43,20 @@ enum ShelfPage: String, CaseIterable, Identifiable {
     func selectAll(_ orderedIDs: [UUID]) {
         ids = Set(orderedIDs)
         if anchor.map({ ids.contains($0) }) != true { anchor = orderedIDs.first }
+        if focusedID.map({ ids.contains($0) }) != true { focusedID = orderedIDs.first }
+    }
+
+    func visibleItems(from items: [ShelfItem]) -> [ShelfItem] {
+        let matching = items.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
+        // Сохраняем порядок внутри обеих групп независимо от стабильности sort.
+        return matching.filter(\.isPinned) + matching.filter { !$0.isPinned }
+    }
+
+    func move(_ delta: Int, orderedIDs: [UUID], modifiers: NSEvent.ModifierFlags = []) {
+        guard !orderedIDs.isEmpty else { return }
+        let index = focusedID.flatMap { orderedIDs.firstIndex(of: $0) }
+        let target = index.map { max(0, min(orderedIDs.count - 1, $0 + delta)) } ?? 0
+        select(orderedIDs[target], orderedIDs: orderedIDs, modifiers: modifiers)
     }
 
     func prune(to orderedIDs: [UUID]) {
@@ -47,6 +64,9 @@ enum ShelfPage: String, CaseIterable, Identifiable {
         ids.formIntersection(available)
         if let anchor, !available.contains(anchor) {
             self.anchor = orderedIDs.first(where: { ids.contains($0) })
+        }
+        if let focusedID, !available.contains(focusedID) {
+            self.focusedID = orderedIDs.first(where: { ids.contains($0) })
         }
     }
 

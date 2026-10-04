@@ -13,11 +13,12 @@ struct CalEvent: Identifiable, Equatable {
     var location: String?
     /// Идентификатор EventKit для ссылки `ical://ekevent/…`; nil, если стор его не отдал.
     var eventID: String?
+    var meetingURL: URL? = nil
 
     var color: Color2 { Color2(hex: colorHex) }
 
     init(id: String, title: String, start: Date, end: Date, isAllDay: Bool,
-         colorHex: String? = nil, location: String? = nil, eventID: String? = nil) {
+         colorHex: String? = nil, location: String? = nil, eventID: String? = nil, meetingURL: URL? = nil) {
         self.id = id
         self.title = title
         self.start = start
@@ -26,6 +27,7 @@ struct CalEvent: Identifiable, Equatable {
         self.colorHex = colorHex
         self.location = location
         self.eventID = eventID
+        self.meetingURL = meetingURL
     }
 }
 
@@ -127,7 +129,8 @@ private func fetchEvents(store: EKEventStore, from: Date, to: Date, reset: Bool)
                                isAllDay: event.isAllDay,
                                colorHex: calendarHex(event.calendar),
                                location: cleanLocation(event.location),
-                               eventID: ekID))
+                               eventID: ekID,
+                               meetingURL: MeetingLink.find(url: event.url, text: [event.location, event.notes].compactMap { $0 }.joined(separator: "\n"))))
     }
 
     return sortForFeed(result, now: from)
@@ -369,5 +372,22 @@ private func calendarStatusAllowsReading(_ status: EKAuthorizationStatus) -> Boo
         } else {
             isRefreshing = false
         }
+    }
+}
+
+/// Only web links are opened; custom schemes and local files in imported events are ignored.
+enum MeetingLink {
+    static func find(url: URL?, text: String) -> URL? {
+        if let url, isWeb(url) { return url }
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
+        let domains = ["zoom.us", "zoom.com", "teams.microsoft.com", "teams.live.com", "meet.google.com",
+                       "telemost.yandex.ru", "telemost.yandex.com", "meet.jit.si", "tolk.yandex.ru"]
+        return detector.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap(\.url).first { url in
+            guard isWeb(url), let host = url.host?.lowercased() else { return false }
+            return domains.contains { host == $0 || host.hasSuffix("." + $0) }
+        }
+    }
+    static func isWeb(_ url: URL) -> Bool {
+        ["https", "http"].contains(url.scheme?.lowercased() ?? "") && url.host != nil
     }
 }

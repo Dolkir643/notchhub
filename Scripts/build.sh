@@ -26,16 +26,18 @@ else
 fi
 
 # xcode-select смотрит на CommandLineTools, поэтому берём Xcode переменной окружения.
-if [ -d /Applications/Xcode.app/Contents/Developer ]; then
+if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app/Contents/Developer ]; then
     export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
+
+export DEVELOPER_DIR="${DEVELOPER_DIR:-$(xcode-select -p)}"
 
 say() { printf "\033[1;34m==>\033[0m %s\n" "$1"; }
 
 # 1. Адаптер MediaRemote ------------------------------------------------------
 ADAPTER_SRC="$ROOT/Vendor/mediaremote-adapter"
 ADAPTER_BUILD="$ROOT/build/adapter-$MIN_MACOS"
-if [ ! -f "$ADAPTER_BUILD/MediaRemoteAdapter.framework/MediaRemoteAdapter" ]; then
+{
     say "Собираю MediaRemoteAdapter.framework"
     # Обе архитектуры явно: на Apple Silicon системный perl запускается как arm64
     # и x86-фреймворк просто не загрузит — музыка молча отвалится.
@@ -47,26 +49,27 @@ if [ ! -f "$ADAPTER_BUILD/MediaRemoteAdapter.framework/MediaRemoteAdapter" ]; th
         -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
         -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN_MACOS" >/dev/null
     cmake --build "$ADAPTER_BUILD" >/dev/null
-else
-    say "MediaRemoteAdapter.framework уже собран"
-fi
+}
 
 # 2. Swift --------------------------------------------------------------------
 # UNIVERSAL=1 — собрать под обе архитектуры (для раздачи на другие маки).
 # По умолчанию только своя: универсальная сборка вдвое дольше.
-ARCH_FLAGS=()
-if [ "${UNIVERSAL:-0}" = "1" ]; then
-    ARCH_FLAGS=(--arch arm64 --arch x86_64)
-    say "swift build -c $CONFIG (arm64 + x86_64)"
-else
-    say "swift build -c $CONFIG"
-fi
 cd "$ROOT"
-# `${x[@]+"${x[@]}"}` вместо простого `"${x[@]}"`: в штатном bash 3.2 из macOS
-# раскрытие пустого массива под `set -u` считается обращением к незаданной
-# переменной и рубит сборку. Ловится только при вызове без UNIVERSAL=1.
-swift build -c "$CONFIG" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}
-BIN="$(swift build -c "$CONFIG" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)/NotchHub"
+if [ "${UNIVERSAL:-0}" = "1" ]; then
+    # Separate native SwiftPM builds avoid Xcode 16's broken multi-architecture
+    # package graph (empty SWIFT_VERSION / duplicate output tasks).
+    for arch in arm64 x86_64; do
+        scratch="$ROOT/.build/dist-$MIN_MACOS-$arch"
+        xcrun swift build -c "$CONFIG" --arch "$arch" --scratch-path "$scratch"
+        arch_bin="$(xcrun swift build -c "$CONFIG" --arch "$arch" --scratch-path "$scratch" --show-bin-path)/NotchHub"
+        cp "$arch_bin" "$ROOT/build/NotchHub-$arch"
+    done
+    BIN="$ROOT/build/NotchHub-universal"
+    lipo -create "$ROOT/build/NotchHub-arm64" "$ROOT/build/NotchHub-x86_64" -output "$BIN"
+else
+    xcrun swift build -c "$CONFIG"
+    BIN="$(xcrun swift build -c "$CONFIG" --show-bin-path)/NotchHub"
+fi
 
 # 3. Бандл --------------------------------------------------------------------
 say "Собираю $APP"
@@ -110,7 +113,7 @@ if otool -L "$EXE" | grep -q "@rpath/libswift_Concurrency.dylib"; then
     # и под `set -e` молча обрывает сборку на этом месте.
     STALE_RPATHS="$(otool -l "$EXE" \
         | awk '/LC_RPATH/{f=1} f&&/path /{print $2; f=0}' \
-        | grep -F "/Xcode.app/" || true)"
+        | grep -F "/Toolchains/" || true)"
     for stale in $STALE_RPATHS; do
         install_name_tool -delete_rpath "$stale" "$EXE" 2>/dev/null || true
     done

@@ -9,10 +9,16 @@ struct ShelfTab: View {
     @State private var targeted = false
 
     private var shelf: ShelfService { state.shelf }
+    private var shown: [ShelfItem] { selection.visibleItems(from: shelf.items) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             TabHeader(title: "Полка") {
+                if selection.page == .saved, !selectedItems.isEmpty {
+                    Button("Удалить (\(selectedItems.count))") { delete(selectedItems) }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                }
                 if selection.page == .saved, !shelf.isEmpty {
                     Text("\(shelf.items.count) · \(Fmt.size(shelf.totalSize))")
                         .font(.system(size: 11))
@@ -49,6 +55,18 @@ struct ShelfTab: View {
                 Spacer(minLength: 0)
             }
             if selection.page == .saved {
+                HubSearchField(text: $selection.query,
+                               placeholder: "Поиск файлов · ⌘клик — выбрать несколько",
+                               autofocus: state.keyboardMode,
+                               onMove: { delta in
+                                   selection.move(delta, orderedIDs: shown.map(\.id))
+                                   if let window = selection.window { window.makeFirstResponder(window) }
+                               },
+                               onSubmit: {
+                                   (selectedItems.isEmpty ? Array(shown.prefix(1)) : selectedItems)
+                                       .forEach { shelf.open($0) }
+                               })
+                    .padding(.horizontal, 8).frame(height: 22).hubCard(7)
                 content
             } else {
                 ShelfDownloadsView(downloads: shelf.downloads, shelf: shelf)
@@ -60,9 +78,15 @@ struct ShelfTab: View {
         .onDrop(of: [.fileURL, .item], isTargeted: $targeted) { providers in
             shelf.handleDrop(providers)
         }
-        .onAppear { installKeyMonitor() }
+        .onAppear {
+            if state.keyboardMode, let first = shown.first {
+                selection.select(first.id, orderedIDs: shown.map(\.id))
+            }
+            installKeyMonitor()
+        }
+        .hubOnChange(of: selection.query) { _ in selection.prune(to: []) }
         .onDisappear { removeKeyMonitor() }
-        .onReceive(shelf.$items) { selection.prune(to: $0.map(\.id)) }
+        .onReceive(shelf.$items) { selection.prune(to: selection.visibleItems(from: $0).map(\.id)) }
     }
 
     // MARK: — содержимое
@@ -74,39 +98,24 @@ struct ShelfTab: View {
                           text: targeted
                           ? "Отпускайте — заберу"
                           : "Бросьте файлы сюда.\nСкриншоты попадают сами")
+            } else if shown.isEmpty {
+                EmptyHint(icon: "magnifyingglass", text: "Файлы не найдены")
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 8) {
-                        ForEach(shelf.items) { item in
-                            ShelfCard(item: item,
-                                      image: shelf.thumbnails[item.id],
-                                      selected: selection.ids.contains(item.id),
-                                      onSelect: { modifiers, preservingGroup in
-                                          selection.select(item.id, orderedIDs: shelf.items.map(\.id),
-                                                           modifiers: modifiers,
-                                                           preservingGroup: preservingGroup)
-                                      },
-                                      onOpen: { selectedItems.forEach { shelf.open($0) } },
-                                      onReveal: {
-                                          NSWorkspace.shared.activateFileViewerSelecting(selectedItems.map(\.url))
-                                      },
-                                      onDelete: { delete(selectedItems) },
-                                      onDeleteSingle: { delete([item]) },
-                                      onPin: { togglePinSelection() },
-                                      onCopy: { shelf.copyToClipboard(items: selectedItems) },
-                                      files: {
-                                          selectedItems.map {
-                                              ShelfDragFile(url: $0.url, preview: shelf.thumbnails[$0.id])
-                                          }
-                                      },
-                                      pinTitle: {
-                                          selectedItems.allSatisfy(\.isPinned) ? "Открепить" : "Закрепить"
-                                      })
-                                .onAppear { shelf.requestThumbnail(item) }
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(spacing: 8) {
+                            ForEach(shown) { item in
+                                card(item)
+                                    .id(item.id)
+                                    .onAppear { shelf.requestThumbnail(item) }
+                            }
                         }
+                        .padding(.horizontal, 2)
+                        .frame(maxHeight: .infinity)
                     }
-                    .padding(.horizontal, 2)
-                    .frame(maxHeight: .infinity)
+                    .hubOnChange(of: selection.focusedID) { id in
+                        if let id { proxy.scrollTo(id) }
+                    }
                 }
             }
         }
@@ -119,10 +128,42 @@ struct ShelfTab: View {
         )
     }
 
+    private func card(_ item: ShelfItem) -> some View {
+        ShelfCard(item: item,
+                  image: shelf.thumbnails[item.id],
+                  selected: selection.ids.contains(item.id),
+                  onSelect: { modifiers, preservingGroup in
+                      selection.select(item.id, orderedIDs: shown.map(\.id),
+                                       modifiers: modifiers, preservingGroup: preservingGroup)
+                  },
+                  onOpen: { actionItems(for: item).forEach { shelf.open($0) } },
+                  onReveal: {
+                      NSWorkspace.shared.activateFileViewerSelecting(actionItems(for: item).map(\.url))
+                  },
+                  onDelete: { delete(actionItems(for: item)) },
+                  onDeleteSingle: { delete([item]) },
+                  onPin: { togglePin(actionItems(for: item)) },
+                  onPreview: { ShelfPreview.shared.show(actionItems(for: item).map(\.url)) },
+                  onCopy: { shelf.copyToClipboard(items: actionItems(for: item)) },
+                  files: {
+                      actionItems(for: item).map {
+                          ShelfDragFile(url: $0.url, preview: shelf.thumbnails[$0.id])
+                      }
+                  },
+                  pinTitle: {
+                      actionItems(for: item).allSatisfy(\.isPinned) ? "Открепить" : "Закрепить"
+                  })
+    }
+
     // MARK: — действия
 
     private var selectedItems: [ShelfItem] {
-        shelf.items.filter { selection.ids.contains($0.id) }
+        shown.filter { selection.ids.contains($0.id) }
+    }
+
+    private func actionItems(for item: ShelfItem) -> [ShelfItem] {
+        let selected = selectedItems
+        return selected.contains(where: { $0.id == item.id }) ? selected : [item]
     }
 
     private func delete(_ items: [ShelfItem]) {
@@ -131,8 +172,7 @@ struct ShelfTab: View {
         Haptics.tap()
     }
 
-    private func togglePinSelection() {
-        let items = selectedItems
+    private func togglePin(_ items: [ShelfItem]) {
         let pinned = !items.allSatisfy(\.isPinned)
         for item in items where item.isPinned != pinned { shelf.togglePin(item) }
     }
@@ -156,10 +196,13 @@ struct ShelfTab: View {
                           let window = selection.window,
                           NSApp.keyWindow === window, event.window === window,
                           NSApp.modalWindow == nil, window.attachedSheet == nil,
+                          !state.isPresentingDialog,
                           !(window.firstResponder is NSTextView),
                           !(window.firstResponder is NSTextField) else { return }
-                    selection.prune(to: shelf.items.map(\.id))
-                    let items = shelf.items.filter { selection.ids.contains($0.id) }
+                    let shown = selection.visibleItems(from: shelf.items)
+                    let orderedIDs = shown.map(\.id)
+                    selection.prune(to: orderedIDs)
+                    let items = shown.filter { selection.ids.contains($0.id) }
                     let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
                         .subtracting([.capsLock, .numericPad, .function])
                     if modifiers == .command {
@@ -169,8 +212,8 @@ struct ShelfTab: View {
                             ?? event.charactersIgnoringModifiers?.lowercased()
                         switch command {
                         case "a":
-                            guard !shelf.isEmpty else { return }
-                            selection.selectAll(shelf.items.map(\.id))
+                            guard !shown.isEmpty else { return }
+                            selection.selectAll(orderedIDs)
                             swallowed = true
                         case "c":
                             guard !items.isEmpty else { return }
@@ -180,14 +223,34 @@ struct ShelfTab: View {
                         }
                         return
                     }
-                    guard modifiers.isEmpty, !items.isEmpty else { return }
+                    if modifiers.isEmpty || modifiers == .shift {
+                        switch code {
+                        case 123, 126:
+                            guard !shown.isEmpty else { return }
+                            selection.move(-1, orderedIDs: orderedIDs, modifiers: modifiers)
+                            swallowed = true
+                        case 124, 125:
+                            guard !shown.isEmpty else { return }
+                            selection.move(1, orderedIDs: orderedIDs, modifiers: modifiers)
+                            swallowed = true
+                        default: break
+                        }
+                        if swallowed { return }
+                    }
+                    guard modifiers.isEmpty else { return }
                     switch code {
                     case 51, 117:   // ⌫ и ⌦
+                        guard !items.isEmpty else { return }
                         withAnimation(Theme.quick) { shelf.remove(items: items) }
                         Haptics.tap()
                         swallowed = true
                     case 36, 76:    // ⏎ на основной клавиатуре и на цифровой
-                        items.forEach { shelf.open($0) }
+                        guard !shown.isEmpty else { return }
+                        (items.isEmpty ? Array(shown.prefix(1)) : items).forEach { shelf.open($0) }
+                        swallowed = true
+                    case 49:        // пробел — системный Quick Look
+                        guard !shown.isEmpty else { return }
+                        ShelfPreview.shared.show((items.isEmpty ? Array(shown.prefix(1)) : items).map(\.url))
                         swallowed = true
                     default:
                         break
@@ -215,6 +278,7 @@ private struct ShelfCard: View {
     let onDelete: () -> Void
     let onDeleteSingle: () -> Void
     let onPin: () -> Void
+    let onPreview: () -> Void
     let onCopy: () -> Void
     let files: () -> [ShelfDragFile]
     let pinTitle: () -> String
@@ -225,39 +289,59 @@ private struct ShelfCard: View {
     private static let previewHeight: CGFloat = 84
 
     var body: some View {
+        cardContent
+            .overlay(dragArea)
+            .overlay(deleteBadge, alignment: .topTrailing)
+            .overlay(pinBadge, alignment: .topLeading)
+            .animation(Theme.quick, value: hovering)
+            .animation(Theme.quick, value: selected)
+            .help(expiryLabel)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(item.name + ", " + expiryLabel)
+            .accessibilityAction { onOpen() }
+            .accessibilityAction(named: Text("Быстрый просмотр")) { onPreview() }
+            .accessibilityAction(named: Text(item.isPinned ? "Открепить" : "Закрепить")) { onPin() }
+    }
+
+    private var cardContent: some View {
         VStack(spacing: 0) {
             preview
             footer
         }
         .frame(width: Self.width)
         .hubCard(12)
-        // Наложения заданы значением, а не замыканием: форма с @ViewBuilder
-        // появилась только в macOS 12, а эта есть с самого SwiftUI.
+        // Наложение значением совместимо с macOS 11.
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(selected ? Theme.accent : (hovering ? Color.white.opacity(0.22) : .clear),
                               lineWidth: selected ? 1.5 : 1)
         )
-        .overlay(
-            ShelfDragArea(url: item.url,
-                          preview: image,
-                          deleteCornerActive: hovering || selected,
-                          onHover: { hovering = $0 },
-                          onClick: { onSelect([], false) },
-                          onOpen: onOpen,
-                          onReveal: onReveal,
-                          onDelete: onDelete,
-                          onSelection: onSelect,
-                          onDeleteSingle: onDeleteSingle,
-                          onCopy: onCopy,
-                          onPin: onPin,
-                          pinTitle: pinTitle,
-                          files: files)
-        )
-        .overlay(deleteBadge, alignment: .topTrailing)
-        .overlay(pinBadge, alignment: .topLeading)
-        .animation(Theme.quick, value: hovering)
-        .animation(Theme.quick, value: selected)
+    }
+
+    private var dragArea: some View {
+        ShelfDragArea(url: item.url,
+                      preview: image,
+                      deleteCornerActive: hovering || selected,
+                      onHover: { hovering = $0 },
+                      onClick: { onSelect([], false) },
+                      onOpen: onOpen,
+                      onReveal: onReveal,
+                      onDelete: onDelete,
+                      onSelection: onSelect,
+                      onDeleteSingle: onDeleteSingle,
+                      onCopy: onCopy,
+                      onPin: onPin,
+                      onPreview: onPreview,
+                      pinTitle: pinTitle,
+                      files: files)
+    }
+
+    private var expiryLabel: String {
+        if item.isPinned { return "Закреплён — не удаляется автоматически" }
+        let days = Settings.shared.shelfRetentionDays
+        guard days > 0 else { return "Без автоочистки" }
+        let left = max(0, Int(ceil(item.added.addingTimeInterval(Double(days) * 86400).timeIntervalSinceNow / 86400)))
+        return left == 0 ? "Ожидает переноса в Корзину" : (left == 1 ? "В Корзину в течение суток" : "В Корзину через \(left) дн.")
     }
 
     @ViewBuilder private var pinBadge: some View {
@@ -307,6 +391,10 @@ private struct ShelfCard: View {
                     .lineLimit(1)
             }
             .hubForeground(Theme.secondaryText)
+            Text(expiryLabel)
+                .font(.system(size: 8))
+                .hubForeground(Theme.secondaryText)
+                .lineLimit(1)
         }
         .frame(width: Self.width - 12, alignment: .leading)
         .padding(.horizontal, 6)

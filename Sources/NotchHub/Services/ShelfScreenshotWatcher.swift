@@ -32,8 +32,9 @@ final class ShelfScreenshotWatcher: @unchecked Sendable {
 
     // MARK: — запуск
 
-    func start() {
-        guard stream == nil else { return }
+    @discardableResult
+    func start() -> Bool {
+        guard stream == nil else { return true }
         startedAt = Date()
 
         var context = FSEventStreamContext(version: 0,
@@ -52,19 +53,20 @@ final class ShelfScreenshotWatcher: @unchecked Sendable {
                                                 FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
                                                 0.3,
                                                 flags) else {
-            Log.shelf.error("FSEvents не создался для \(self.directory.path, privacy: .public)")
-            return
+            Log.shelf.error("FSEvents не создался для \(self.directory.path, privacy: .private)")
+            return false
         }
 
         FSEventStreamSetDispatchQueue(created, queue)
         guard FSEventStreamStart(created) else {
             FSEventStreamInvalidate(created)
             FSEventStreamRelease(created)
-            Log.shelf.error("FSEvents не стартовал для \(self.directory.path, privacy: .public)")
-            return
+            Log.shelf.error("FSEvents не стартовал для \(self.directory.path, privacy: .private)")
+            return false
         }
         stream = created
-        Log.shelf.info("Слежу за скриншотами: \(self.directory.path, privacy: .public)")
+        Log.shelf.info("Слежение за скриншотами запущено")
+        return true
     }
 
     func stop() {

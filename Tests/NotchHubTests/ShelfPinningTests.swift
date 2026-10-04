@@ -29,6 +29,7 @@ final class ShelfPinningTests: XCTestCase {
         var entries = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store.indexURL))
             as? [[String: Any]])
         entries[0].removeValue(forKey: "isPinned")
+        entries[0].removeValue(forKey: "pinned")
         try JSONSerialization.data(withJSONObject: entries).write(to: store.indexURL)
         let restored = try XCTUnwrap(store.loadRecovering().first)
         XCTAssertEqual(restored.id, item.id)
@@ -36,6 +37,40 @@ final class ShelfPinningTests: XCTestCase {
         XCTAssertEqual(restored.added.timeIntervalSince1970, item.added.timeIntervalSince1970, accuracy: 1)
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path)
             .contains(where: { $0.contains("broken-") }))
+    }
+
+    func testPinFieldsFromBothIndexVersionsSurviveUpgrade() throws {
+        let item = try file("keep.txt")
+        for field in ["isPinned", "pinned"] {
+            XCTAssertTrue(store.save([item]))
+            var entries = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store.indexURL))
+                as? [[String: Any]])
+            entries[0].removeValue(forKey: "isPinned")
+            entries[0].removeValue(forKey: "pinned")
+            entries[0][field] = true
+            try JSONSerialization.data(withJSONObject: entries).write(to: store.indexURL)
+
+            let restored = try XCTUnwrap(store.loadRecovering().first)
+            XCTAssertEqual(restored.id, item.id, field)
+            XCTAssertTrue(restored.isPinned, "The \(field) index must keep its pin during upgrade")
+            XCTAssertEqual(restored.added.timeIntervalSince1970, item.added.timeIntervalSince1970,
+                           accuracy: 1, field)
+        }
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .contains(where: { $0.contains("broken-") }))
+    }
+
+    func testPinWritesCanonicalReleasedIndexField() throws {
+        var item = try file("canonical.txt")
+        item.isPinned = true
+        XCTAssertTrue(store.save([item]))
+        let entries = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store.indexURL))
+            as? [[String: Any]])
+        XCTAssertEqual(entries[0]["pinned"] as? Bool, true)
+        XCTAssertNil(entries[0]["isPinned"])
+        let restored = try XCTUnwrap(store.loadRecovering().first)
+        XCTAssertEqual(restored.id, item.id)
+        XCTAssertTrue(restored.isPinned)
     }
 
     @MainActor

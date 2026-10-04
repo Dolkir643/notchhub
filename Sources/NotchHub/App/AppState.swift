@@ -52,6 +52,18 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
     /// Панель раскрыта. Промежуточной «компактной» ступени нет:
     /// островок либо пустой и молчит, либо раскрыт целиком за одно движение.
     @Published private(set) var isExpanded = false
+    @Published private(set) var activeScreenID: String?
+    @Published private(set) var keyboardMode = false
+    var isPresentingDialog = false
+
+    func isExpanded(on frame: CGRect) -> Bool {
+        isExpanded && activeScreenID == NSStringFromRect(frame)
+    }
+    var orderedTabs: [NotchTab] {
+        let saved = settings.tabOrder.compactMap(NotchTab.init(rawValue:))
+        var seen = Set<NotchTab>()
+        return (saved + NotchTab.available).filter { NotchTab.available.contains($0) && seen.insert($0).inserted }
+    }
     /// Над чёлкой тащат файл.
     @Published var isDropTargeted = false
     /// Активная вкладка.
@@ -69,6 +81,7 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
     let calendarService = CalendarService()
     let translate = TranslateService()
     let keepAwake = KeepAwakeService()
+    let updates = UpdateService()
 
     /// Островок спрятан: под ним полноэкранное приложение, и рисовать поверх
     /// его интерфейса нечего. Вместо островка работает узкая полоска-триггер.
@@ -96,7 +109,7 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
         for object in [media.objectWillChange, shelf.objectWillChange, clipboard.objectWillChange,
                        snippets.objectWillChange, calendarService.objectWillChange,
                        translate.objectWillChange, settings.objectWillChange, keepAwake.objectWillChange,
-                       fullScreen.objectWillChange] {
+                       fullScreen.objectWillChange, updates.objectWillChange] {
             object.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &bag)
         }
     }
@@ -165,6 +178,7 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
         isInside = false
         insideSince = nil
         openTask?.cancel(); openTask = nil
+        if keyboardMode || isPresentingDialog { return }
         closeTask?.cancel()
         closeTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 100_000_000) // дебаунс 100 мс
@@ -185,11 +199,19 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
         withAnimation(Theme.quick) { showsEdgeHint = visible }
     }
 
-    func expand(to tab: NotchTab? = nil) {
+    func expand(to tab: NotchTab? = nil, keyboard: Bool = false, screenID: String? = nil) {
         openTask?.cancel(); openTask = nil
         closeTask?.cancel(); closeTask = nil
         if let tab, NotchTab.available.contains(tab) { selectedTab = tab }
-        guard !isExpanded else { return }
+        if keyboard { keyboardMode = true }
+        if !isExpanded || screenID != nil {
+            activeScreenID = screenID ?? NotchWindowController.shared.preferredScreenID
+        }
+        if isExpanded {
+            NotchWindowController.shared.setKeyInputAllowed(true)
+            if keyboard { NotchWindowController.shared.focusActivePanel() }
+            return
+        }
         // Календарь просим ДО анимации: раскрытие и запрос к EventKit
         // не должны конкурировать за главный поток на одном кадре.
         calendarService.refreshIfNeeded()
@@ -199,9 +221,11 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
             isExpanded = true
             showsEdgeHint = false
         }
+        if keyboard { NotchWindowController.shared.focusActivePanel() }
     }
 
     func collapse(immediate: Bool = false) {
+        guard !isPresentingDialog else { return }
         openTask?.cancel(); openTask = nil
         if immediate { closeTask?.cancel(); closeTask = nil }
         guard isExpanded || isDropTargeted else { return }
@@ -209,12 +233,13 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
         NotchWindowController.shared.setKeyInputAllowed(false)
         withAnimation(Theme.closeSpring) {
             isExpanded = false
+            keyboardMode = false
             isDropTargeted = false
         }
     }
 
     func toggleExpanded() {
-        isExpanded ? collapse(immediate: true) : expand()
+        isExpanded ? collapse(immediate: true) : expand(keyboard: true)
     }
 
     /// Файл затащили на свёрнутую чёлку — раскрываемся на «Полке».
@@ -225,6 +250,46 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
 
     func dropExited() {
         isDropTargeted = false
+    }
+
+    func makeSnippet(_ text: String) {
+        snippets.add(title: String(text.split(separator: "\n").first?.prefix(48) ?? "Заготовка"), value: text)
+        snippets.query = ""
+        expand(to: .snippets, keyboard: true)
+        flash("Добавлено в заготовки")
+    }
+
+    func translateText(_ text: String) {
+        translate.input = text
+        translate.inputChanged()
+        expand(to: .translate, keyboard: true)
+    }
+
+    func putOnShelf(_ item: ClipItem) {
+        if !item.fileURLs.isEmpty {
+            shelf.add(urls: item.fileURLs)
+        } else {
+            let payload: Data
+            let name: String
+            if let data = item.originalImageData {
+                payload = data
+                // The extension must match the original bytes (PNG or TIFF).
+                name = "Изображение." + (data.starts(with: [137, 80, 78, 71]) ? "png" : "tiff")
+            } else if let text = item.textValue {
+                payload = Data(text.utf8); name = "Текст.txt"
+            } else { return }
+            Task {
+                let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                do {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    defer { try? FileManager.default.removeItem(at: folder) }
+                    let file = folder.appendingPathComponent(name)
+                    try payload.write(to: file, options: .atomic)
+                    await shelf.addAndWait(urls: [file])
+                } catch { flash("Не удалось добавить на полку") }
+            }
+        }
+        expand(to: .shelf, keyboard: true)
     }
 
     // MARK: — подтверждения

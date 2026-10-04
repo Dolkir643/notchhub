@@ -11,12 +11,12 @@ struct RootView: View {
     @EnvironmentObject private var state: AppState
 
     private var notchHeight: CGFloat { geometry.size.height }
-    private var open: Bool { state.isExpanded }
+    private var open: Bool { state.isExpanded(on: geometry.screenFrame) }
 
     /// Островок спрятан: под ним полноэкранное приложение на этом же экране.
     /// Проверяем именно свой экран — на втором мониторе островок остаётся.
     private var hidden: Bool {
-        state.isHidden && state.fullScreen.covers(geometry.screenFrame)
+        state.settings.hideInFullScreen && !open && state.fullScreen.covers(geometry.screenFrame)
     }
 
     private var contentWidth: CGFloat { open ? Theme.panelWidth : geometry.size.width }
@@ -57,7 +57,7 @@ struct RootView: View {
             .frame(width: EdgeTrigger.width, height: EdgeTrigger.height + EdgeTrigger.overshoot, alignment: .top)
             .background(Color.black.opacity(0.001))
             .contentShape(Rectangle())
-            .onTapGesture { state.expand() }
+            .onTapGesture { state.expand(screenID: NSStringFromRect(geometry.screenFrame)) }
             .onDrop(of: [.fileURL, .item], isTargeted: Binding(
                 get: { state.isDropTargeted },
                 set: { targeted in
@@ -100,7 +100,7 @@ struct RootView: View {
         .contentShape(shape)
         // Клик раскрывает только свёрнутый островок: тап по пустому месту
         // раскрытой панели не должен её захлопывать — это делает клик ВНЕ панели.
-        .onTapGesture { if !open { state.expand() } }
+        .onTapGesture { if !open { state.expand(screenID: NSStringFromRect(geometry.screenFrame)) } }
     }
 
     /// Язычок у верхней кромки: единственное, что остаётся от островка,
@@ -114,7 +114,7 @@ struct RootView: View {
                 .frame(width: 64, height: 3)
                 .padding(.top, 1)
                 .contentShape(Rectangle().size(width: 120, height: 8))
-                .onTapGesture { state.expand() }
+                .onTapGesture { state.expand(screenID: NSStringFromRect(geometry.screenFrame)) }
                 .animation(Theme.quick, value: state.showsEdgeHint)
         }
     }
@@ -140,7 +140,10 @@ struct RootView: View {
             Color.clear.frame(height: notchHeight)
 
             if open {
-                ExpandedView()
+                Group {
+                    if state.settings.onboardingComplete { ExpandedView() }
+                    else { WelcomeView() }
+                }
                     .frame(height: Theme.panelHeight)
                     // Содержимое проявляется чуть позже кромки: пока панель
                     // ещё узкая, текст успел бы мелькнуть обрезанным.
