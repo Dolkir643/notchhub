@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var signalSources: [DispatchSourceSignal] = []
+    private var terminationWait: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
@@ -38,7 +39,6 @@ import SwiftUI
             source.setEventHandler {
                 MainActor.assumeIsolated {
                     Log.app.notice("получен сигнал \(number, privacy: .public), выходим")
-                    AppState.shared.stopServices()
                     NSApp.terminate(nil)
                 }
             }
@@ -48,7 +48,33 @@ import SwiftUI
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        terminationWait?.cancel()
         AppState.shared.stopServices()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationWait != nil { return .terminateLater }
+        let awake = AppState.shared.keepAwake
+        awake.stop()
+        guard awake.pendingRestoration else { return .terminateNow }
+        // Даём сторожу сеанса вернуть системный сон до обычного выхода.
+        // После аварийного выхода он независимо заметит исчезновение процесса.
+        terminationWait = Task { @MainActor in
+            for _ in 0..<100 where awake.pendingRestoration {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            if awake.pendingRestoration {
+                // Ошибка восстановления должна оставаться видимой: не выдаём
+                // незавершённое изменение питания за успешное закрытие.
+                sender.reply(toApplicationShouldTerminate: false)
+                self.terminationWait = nil
+                AppState.shared.expand(to: .settings)
+            } else {
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }

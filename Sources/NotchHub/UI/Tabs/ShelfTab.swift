@@ -2,30 +2,6 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Выделение живёт объектом: на него ссылается монитор клавиатуры,
-/// который переживает перерисовку вкладки. Монитор хранится здесь же —
-/// `onDisappear` приходит не всегда (панели пересоздаются при смене конфигурации
-/// дисплеев), а брошенный локальный монитор молча глотал бы ⌫ у всего приложения.
-@MainActor final class ShelfSelection: ObservableObject {
-    @Published var id: UUID?
-
-    private var monitor: Any?
-
-    func keepMonitor(_ make: () -> Any?) {
-        guard monitor == nil else { return }
-        monitor = make()
-    }
-
-    func dropMonitor() {
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
-    }
-
-    deinit {
-        if let monitor { NSEvent.removeMonitor(monitor) }
-    }
-}
-
 /// Вкладка «Полка»: карточки файлов, приём drag&drop, вытаскивание наружу.
 struct ShelfTab: View {
     @EnvironmentObject private var state: AppState
@@ -37,13 +13,12 @@ struct ShelfTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             TabHeader(title: "Полка") {
-                if !shelf.isEmpty {
+                if selection.page == .saved, !shelf.isEmpty {
                     Text("\(shelf.items.count) · \(Fmt.size(shelf.totalSize))")
                         .font(.system(size: 11))
                         .hubForeground(Theme.secondaryText)
                     Button {
                         shelf.clearAll()
-                        selection.id = nil
                     } label: {
                         Text("Очистить")
                             .font(.system(size: 11, weight: .medium))
@@ -53,18 +28,41 @@ struct ShelfTab: View {
                             .background(Capsule().fill(Color.white.opacity(0.10)))
                     }
                     .buttonStyle(.plain)
-                    .help("Убрать все файлы в Корзину")
+                    .disabled(shelf.items.allSatisfy(\.isPinned))
+                    .help("В Корзину всё, кроме закреплённых")
                 }
             }
-            content
+            HStack(spacing: 10) {
+                Picker("Раздел полки", selection: $selection.page) {
+                    ForEach(ShelfPage.allCases) { page in
+                        Text(page.title).tag(page)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(SegmentedPickerStyle())
+                .frame(width: 220)
+                if selection.page == .saved, !selection.ids.isEmpty {
+                    Text("Выбрано: \(selection.ids.count)")
+                        .font(.system(size: 10))
+                        .hubForeground(Theme.secondaryText)
+                }
+                Spacer(minLength: 0)
+            }
+            if selection.page == .saved {
+                content
+            } else {
+                ShelfDownloadsView(downloads: shelf.downloads, shelf: shelf)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(ShelfWindowReader(selection: selection))
         .contentShape(Rectangle())
         .onDrop(of: [.fileURL, .item], isTargeted: $targeted) { providers in
             shelf.handleDrop(providers)
         }
         .onAppear { installKeyMonitor() }
         .onDisappear { removeKeyMonitor() }
+        .onReceive(shelf.$items) { selection.prune(to: $0.map(\.id)) }
     }
 
     // MARK: — содержимое
@@ -82,11 +80,28 @@ struct ShelfTab: View {
                         ForEach(shelf.items) { item in
                             ShelfCard(item: item,
                                       image: shelf.thumbnails[item.id],
-                                      selected: selection.id == item.id,
-                                      onSelect: { selection.id = item.id },
-                                      onOpen: { shelf.open(item) },
-                                      onReveal: { shelf.reveal(item) },
-                                      onDelete: { delete(item) })
+                                      selected: selection.ids.contains(item.id),
+                                      onSelect: { modifiers, preservingGroup in
+                                          selection.select(item.id, orderedIDs: shelf.items.map(\.id),
+                                                           modifiers: modifiers,
+                                                           preservingGroup: preservingGroup)
+                                      },
+                                      onOpen: { selectedItems.forEach { shelf.open($0) } },
+                                      onReveal: {
+                                          NSWorkspace.shared.activateFileViewerSelecting(selectedItems.map(\.url))
+                                      },
+                                      onDelete: { delete(selectedItems) },
+                                      onDeleteSingle: { delete([item]) },
+                                      onPin: { togglePinSelection() },
+                                      onCopy: { shelf.copyToClipboard(items: selectedItems) },
+                                      files: {
+                                          selectedItems.map {
+                                              ShelfDragFile(url: $0.url, preview: shelf.thumbnails[$0.id])
+                                          }
+                                      },
+                                      pinTitle: {
+                                          selectedItems.allSatisfy(\.isPinned) ? "Открепить" : "Закрепить"
+                                      })
                                 .onAppear { shelf.requestThumbnail(item) }
                         }
                     }
@@ -106,33 +121,73 @@ struct ShelfTab: View {
 
     // MARK: — действия
 
-    private func delete(_ item: ShelfItem) {
-        if selection.id == item.id { selection.id = nil }
-        withAnimation(Theme.quick) { shelf.remove(item) }
+    private var selectedItems: [ShelfItem] {
+        shelf.items.filter { selection.ids.contains($0.id) }
+    }
+
+    private func delete(_ items: [ShelfItem]) {
+        guard !items.isEmpty else { return }
+        withAnimation(Theme.quick) { shelf.remove(items: items) }
         Haptics.tap()
     }
 
-    /// ⌫ убирает выделенный файл, ⏎ открывает. Панель ключевая только в раскрытом
-    /// виде, поэтому монитор локальный и живёт ровно столько, сколько вкладка.
+    private func togglePinSelection() {
+        let items = selectedItems
+        let pinned = !items.allSatisfy(\.isPinned)
+        for item in items where item.isPinned != pinned { shelf.togglePin(item) }
+    }
+
+    /// Локальные сочетания не должны перехватывать ввод в диалогах, других
+    /// панелях или текстовых полях. Привязка к окну также исключает двойную
+    /// обработку, когда чёлка показана на нескольких мониторах.
     private func installKeyMonitor() {
         let shelf = state.shelf
         let selection = self.selection
+        let state = self.state
         selection.keepMonitor {
-            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak selection, weak state] event in
                 let code = event.keyCode
                 var swallowed = false
                 // Событие наружу из assumeIsolated не выносим: NSEvent несендабельный.
                 MainActor.assumeIsolated {
-                    guard let id = selection.id,
-                          let item = shelf.items.first(where: { $0.id == id }) else { return }
+                    guard let selection, let state,
+                          state.isExpanded, state.selectedTab == .shelf,
+                          selection.page == .saved,
+                          let window = selection.window,
+                          NSApp.keyWindow === window, event.window === window,
+                          NSApp.modalWindow == nil, window.attachedSheet == nil,
+                          !(window.firstResponder is NSTextView),
+                          !(window.firstResponder is NSTextField) else { return }
+                    selection.prune(to: shelf.items.map(\.id))
+                    let items = shelf.items.filter { selection.ids.contains($0.id) }
+                    let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                        .subtracting([.capsLock, .numericPad, .function])
+                    if modifiers == .command {
+                        // Сохраняем преобразование ⌘ текущей раскладкой
+                        // (например, русская раскладка или Dvorak–QWERTY).
+                        let command = event.characters?.lowercased()
+                            ?? event.charactersIgnoringModifiers?.lowercased()
+                        switch command {
+                        case "a":
+                            guard !shelf.isEmpty else { return }
+                            selection.selectAll(shelf.items.map(\.id))
+                            swallowed = true
+                        case "c":
+                            guard !items.isEmpty else { return }
+                            shelf.copyToClipboard(items: items)
+                            swallowed = true
+                        default: break
+                        }
+                        return
+                    }
+                    guard modifiers.isEmpty, !items.isEmpty else { return }
                     switch code {
                     case 51, 117:   // ⌫ и ⌦
-                        selection.id = nil
-                        withAnimation(Theme.quick) { shelf.remove(item) }
+                        withAnimation(Theme.quick) { shelf.remove(items: items) }
                         Haptics.tap()
                         swallowed = true
                     case 36, 76:    // ⏎ на основной клавиатуре и на цифровой
-                        shelf.open(item)
+                        items.forEach { shelf.open($0) }
                         swallowed = true
                     default:
                         break
@@ -154,10 +209,15 @@ private struct ShelfCard: View {
     let item: ShelfItem
     let image: NSImage?
     let selected: Bool
-    let onSelect: () -> Void
+    let onSelect: (NSEvent.ModifierFlags, Bool) -> Void
     let onOpen: () -> Void
     let onReveal: () -> Void
     let onDelete: () -> Void
+    let onDeleteSingle: () -> Void
+    let onPin: () -> Void
+    let onCopy: () -> Void
+    let files: () -> [ShelfDragFile]
+    let pinTitle: () -> String
 
     @State private var hovering = false
 
@@ -183,14 +243,34 @@ private struct ShelfCard: View {
                           preview: image,
                           deleteCornerActive: hovering || selected,
                           onHover: { hovering = $0 },
-                          onClick: onSelect,
+                          onClick: { onSelect([], false) },
                           onOpen: onOpen,
                           onReveal: onReveal,
-                          onDelete: onDelete)
+                          onDelete: onDelete,
+                          onSelection: onSelect,
+                          onDeleteSingle: onDeleteSingle,
+                          onCopy: onCopy,
+                          onPin: onPin,
+                          pinTitle: pinTitle,
+                          files: files)
         )
         .overlay(deleteBadge, alignment: .topTrailing)
+        .overlay(pinBadge, alignment: .topLeading)
         .animation(Theme.quick, value: hovering)
         .animation(Theme.quick, value: selected)
+    }
+
+    @ViewBuilder private var pinBadge: some View {
+        if item.isPinned {
+            Image(systemName: "pin.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .hubForeground(Theme.accent)
+                .padding(5)
+                .background(Circle().fill(Color.black.opacity(0.65)))
+                .padding(4)
+                .allowsHitTesting(false)
+                .help("Закреплён: остаётся при очистке")
+        }
     }
 
     private var preview: some View {

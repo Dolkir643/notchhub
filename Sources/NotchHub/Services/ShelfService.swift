@@ -3,7 +3,7 @@ import Combine
 import UniformTypeIdentifiers
 
 /// Файл на полке.
-struct ShelfItem: Identifiable, Codable, Equatable {
+struct ShelfItem: Identifiable, Codable, Equatable, Sendable {
     var id: UUID
     var name: String
     var size: Int64
@@ -11,6 +11,11 @@ struct ShelfItem: Identifiable, Codable, Equatable {
     /// Подпапка внутри Shelf/: <UUID>/<имя файла>
     var relativePath: String
     var isScreenshot: Bool
+    var isPinned = false
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, size, added, relativePath, isScreenshot, isPinned
+    }
 
     var url: URL { AppPaths.shelf.appendingPathComponent(relativePath) }
 
@@ -18,10 +23,25 @@ struct ShelfItem: Identifiable, Codable, Equatable {
     var directory: URL { AppPaths.shelf.appendingPathComponent(id.uuidString, isDirectory: true) }
 }
 
+extension ShelfItem {
+    /// Старый индекс не содержит закрепления. Не теряем его при обновлении.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        size = try values.decode(Int64.self, forKey: .size)
+        added = try values.decode(Date.self, forKey: .added)
+        relativePath = try values.decode(String.self, forKey: .relativePath)
+        isScreenshot = try values.decode(Bool.self, forKey: .isScreenshot)
+        isPinned = try values.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+    }
+}
+
 /// Полка: приём drag&drop, перетаскивание наружу, автоподхват скриншотов.
 @MainActor final class ShelfService: ObservableObject {
     @Published private(set) var items: [ShelfItem] = []
     @Published private(set) var thumbnails: [UUID: NSImage] = [:]
+    let downloads = ShelfDownloadsService()
 
     var isEmpty: Bool { items.isEmpty }
     var totalSize: Int64 { items.reduce(0) { $0 + $1.size } }
@@ -30,17 +50,21 @@ struct ShelfItem: Identifiable, Codable, Equatable {
     static let thumbnailSize = CGSize(width: 120, height: 90)
 
     private let store: ShelfStore
+    private let copyFile: @Sendable (URL, Bool) -> ShelfItem?
     private var initialization: Task<Void, Never>?
     private var ready = false
     private var generation = 0
     private var removing: Set<UUID> = []
+    private var imports: [URL: Task<ShelfItem?, Never>] = [:]
     private let recycle: ([URL], @escaping @Sendable ([URL: URL], Error?) -> Void) -> Void
 
     init(store: ShelfStore = ShelfStore(),
+         copyFile: (@Sendable (URL, Bool) -> ShelfItem?)? = nil,
          recycle: @escaping ([URL], @escaping @Sendable ([URL: URL], Error?) -> Void) -> Void = {
              NSWorkspace.shared.recycle($0, completionHandler: $1)
          }) {
         self.store = store
+        self.copyFile = copyFile ?? { store.copyIn($0, isScreenshot: $1) }
         self.recycle = recycle
     }
 
@@ -57,11 +81,18 @@ struct ShelfItem: Identifiable, Codable, Equatable {
     func start() {
         guard !running else { return }
         running = true
+        downloads.start()
 
         generation &+= 1
         let token = generation
         let store = self.store
+        let pendingImports = Array(imports.values)
+        imports.removeAll()
         initialization = Task { [weak self] in
+            // Копирование нельзя прервать посередине системного copyItem.
+            // После перезапуска сначала дожидаемся его и затем восстанавливаем
+            // готовые каталоги, иначе поздняя копия осталась бы невидимой.
+            for pending in pendingImports { _ = await pending.value }
             let result = await Task.detached(priority: .utility) {
                 Result { try store.loadRecovering() }
             }.value
@@ -106,6 +137,7 @@ struct ShelfItem: Identifiable, Codable, Equatable {
 
     func stop() {
         running = false
+        downloads.stop()
         generation &+= 1
         initialization?.cancel()
         initialization = nil
@@ -125,14 +157,14 @@ struct ShelfItem: Identifiable, Codable, Equatable {
     func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         let usable = providers.filter { Self.canTake($0) }
         guard !usable.isEmpty else { return false }
-
+        let token = generation
         Task { [weak self] in
             var urls: [URL] = []
             for provider in usable {
                 if let url = await Self.resolveURL(from: provider) { urls.append(url) }
             }
-            guard !urls.isEmpty else { return }
-            self?.add(urls: urls)
+            guard !urls.isEmpty, let self, self.running, self.generation == token else { return }
+            self.add(urls: urls)
         }
         return true
     }
@@ -143,25 +175,60 @@ struct ShelfItem: Identifiable, Codable, Equatable {
     }
 
     func add(urls: [URL], isScreenshot: Bool) {
-        var unique: [URL] = []
-        for url in urls where !unique.contains(url.standardizedFileURL) {
-            unique.append(url.standardizedFileURL)
-        }
-        guard !unique.isEmpty else { return }
-
         let token = generation
         Task { [weak self] in
-            guard let self else { return }
-            await self.waitUntilReady()
-            guard self.running, self.ready, self.generation == token else { return }
-            let store = self.store
-            let fresh = await Task.detached(priority: .userInitiated) {
-                unique.compactMap { store.copyIn($0, isScreenshot: isScreenshot) }
-            }.value
-            guard self.running, self.generation == token, !fresh.isEmpty else { return }
-            self.adopt(fresh, replacing: false)
-            if isScreenshot { AppState.shared.flash("Скриншот на полке") }
+            guard let self, self.running, self.generation == token else { return }
+            let fresh = await self.importFiles(urls: urls, isScreenshot: isScreenshot)
+            if isScreenshot, !fresh.isEmpty { AppState.shared.flash("Скриншот на полке") }
         }
+    }
+
+    /// Возвращаем только сохранённые элементы: кнопка загрузок может честно
+    /// показать результат и держать доступ к исходной папке до конца копирования.
+    @discardableResult
+    func importFiles(urls: [URL], isScreenshot: Bool = false) async -> [ShelfItem] {
+        let token = generation
+        await waitUntilReady()
+        guard running, ready, generation == token, !Task.isCancelled else { return [] }
+        var seen = Set<URL>()
+        let unique = urls.filter(\.isFileURL).map(\.standardizedFileURL)
+            .filter { seen.insert($0).inserted }
+        var copied: [ShelfItem] = []
+        var failed = false
+        for url in unique {
+            guard running, generation == token, !Task.isCancelled else { break }
+            let task: Task<ShelfItem?, Never>
+            let ownsImport = imports[url] == nil
+            if let existing = imports[url] {
+                task = existing
+            } else {
+                let copyFile = self.copyFile
+                // Единственная задача коммитит копию до пробуждения всех
+                // ожидающих. Поздний пакет не перезапишет закрепление и не
+                // вернёт файл, который пользователь уже убрал с полки.
+                task = Task { [weak self] in
+                    let item = await Task.detached(priority: .userInitiated) {
+                        copyFile(url, isScreenshot)
+                    }.value
+                    guard let self, self.running, self.generation == token, let item else { return nil }
+                    self.adopt([item], replacing: false)
+                    return item
+                }
+                imports[url] = task
+            }
+            let item = await task.value
+            if ownsImport, generation == token { imports[url] = nil }
+            // Скопированный файл переживает остановку сервиса и восстановится
+            // из каталога при следующем старте; поздний callback не меняет UI.
+            guard running, generation == token else { break }
+            if let item { copied.append(item) } else { failed = true }
+        }
+        guard running, generation == token else { return [] }
+        if failed, !Task.isCancelled {
+            AppState.shared.flash("Не удалось сохранить часть файлов")
+        }
+        let copiedIDs = Set(copied.map(\.id))
+        return items.filter { copiedIDs.contains($0.id) }
     }
 
     // MARK: — удаление
@@ -171,9 +238,38 @@ struct ShelfItem: Identifiable, Codable, Equatable {
         trash([item])
     }
 
+    func remove(items: [ShelfItem]) {
+        guard ready else { return }
+        let ids = Set(items.map(\.id))
+        trash(self.items.filter { ids.contains($0.id) })
+    }
+
     func clearAll() {
         guard ready else { return }
-        trash(items)
+        trash(items.filter { !$0.isPinned })
+    }
+
+    func togglePin(_ item: ShelfItem) {
+        guard ready, !removing.contains(item.id),
+              let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        var updated = items
+        updated[index].isPinned.toggle()
+        guard store.save(updated) else {
+            AppState.shared.flash("Не удалось сохранить закрепление")
+            return
+        }
+        items = updated
+    }
+
+    func copyToClipboard(items: [ShelfItem]) {
+        let ids = Set(items.map(\.id))
+        let urls = self.items.filter { ids.contains($0.id) }.map { store.url(for: $0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !urls.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        if NSPasteboard.general.writeObjects(urls.map { $0 as NSURL }) {
+            AppState.shared.flash("Файлы скопированы")
+        }
     }
 
     /// Открыть в Finder.
@@ -224,7 +320,7 @@ struct ShelfItem: Identifiable, Codable, Equatable {
         let days = Settings.shared.shelfRetentionDays
         guard days > 0 else { return }
         let deadline = Date().addingTimeInterval(-Double(days) * 86_400)
-        let expired = items.filter { $0.added < deadline && !removing.contains($0.id) }
+        let expired = items.filter { !$0.isPinned && $0.added < deadline && !removing.contains($0.id) }
         guard !expired.isEmpty else { return }
 
         let expiredIDs = Set(expired.map(\.id))

@@ -18,23 +18,34 @@ struct SettingsTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            TabHeader("Настройки")
+            TabHeader("Настройки") {
+                if state.keepAwake.isActive {
+                    Label("Не засыпает", systemImage: "cup.and.saucer.fill")
+                        .font(.system(size: 11))
+                        .hubForeground(Theme.accent)
+                }
+            }
 
             // Столбцы уравновешены по числу строк, ScrollView — страховка
             // на случай подписи про подтверждение автозапуска.
             ScrollView(.vertical) {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        launchSection
-                        notchSection
+                VStack(alignment: .leading, spacing: 8) {
+                    SettingsSection("Не засыпать") {
+                        KeepAwakeControls(service: state.keepAwake)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            launchSection
+                            notchSection
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        shelfSection
-                        clipboardSection
+                        VStack(alignment: .leading, spacing: 6) {
+                            shelfSection
+                            clipboardSection
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.bottom, 2)
             }

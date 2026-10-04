@@ -62,15 +62,18 @@ final class ShelfStore: Sendable {
         return stored
     }
 
-    func save(_ items: [ShelfItem]) {
+    @discardableResult
+    func save(_ items: [ShelfItem]) -> Bool {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         do {
             let data = try encoder.encode(items)
             try data.write(to: indexURL, options: .atomic)
+            return true
         } catch {
             Log.shelf.error("Индекс не записан: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 
@@ -104,7 +107,19 @@ final class ShelfStore: Sendable {
 
         do {
             try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            let before = try FileManager.default.attributesOfItem(atPath: origin.path)
             try FileManager.default.copyItem(at: origin, to: staging.appendingPathComponent(name))
+            // Загрузка могла возобновиться уже после нажатия «Сохранить».
+            // Не публикуем обрезанную копию изменившегося обычного файла.
+            if before[.type] as? FileAttributeType == .typeRegular {
+                let after = try FileManager.default.attributesOfItem(atPath: origin.path)
+                for key in [FileAttributeKey.size, .modificationDate, .systemFileNumber] {
+                    guard let original = before[key] as? NSObject,
+                          let current = after[key] as? NSObject, original == current else {
+                        throw CocoaError(.fileReadUnknown)
+                    }
+                }
+            }
             try FileManager.default.moveItem(at: staging, to: folder)
         } catch {
             Log.shelf.error("Не скопировал \(name, privacy: .public): \(error.localizedDescription, privacy: .public)")

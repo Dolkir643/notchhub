@@ -68,6 +68,7 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
     let snippets = SnippetStore()
     let calendarService = CalendarService()
     let translate = TranslateService()
+    let keepAwake = KeepAwakeService()
 
     /// Островок спрятан: под ним полноэкранное приложение, и рисовать поверх
     /// его интерфейса нечего. Вместо островка работает узкая полоска-триггер.
@@ -94,7 +95,7 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
         // Панель перерисовывается, когда сервисы меняют своё состояние.
         for object in [media.objectWillChange, shelf.objectWillChange, clipboard.objectWillChange,
                        snippets.objectWillChange, calendarService.objectWillChange,
-                       translate.objectWillChange, settings.objectWillChange,
+                       translate.objectWillChange, settings.objectWillChange, keepAwake.objectWillChange,
                        fullScreen.objectWillChange] {
             object.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &bag)
         }
@@ -107,12 +108,14 @@ enum NotchTab: String, CaseIterable, Identifiable, Codable {
         snippets.start()
         calendarService.start()
         translate.start()
+        keepAwake.start()
     }
 
     func stopServices() {
         media.stop()
         shelf.stop()
         clipboard.stop()
+        keepAwake.stop()
     }
 
     // MARK: — раскрытие / схлопывание
