@@ -16,7 +16,7 @@ jobs:
       CMAKE_BUILD_PARALLEL_LEVEL: '3'
     defaults:
       run:
-        shell: bash
+        shell: bash Scripts/ci-check.sh "Build or test failure" bash --noprofile --norc -eo pipefail {0}
     steps:
       - uses: actions/checkout@v7
         with:
