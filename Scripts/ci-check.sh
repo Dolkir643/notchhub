@@ -18,8 +18,9 @@ import sys
 label, path = sys.argv[1:]
 lines = Path(path).read_text(errors='replace').splitlines()
 # Native compiler errors can precede the final compilation progress lines.
-errors = [line for line in lines if 'error:' in line or line.startswith(('FAIL:', 'ERROR:'))]
-summary = '\n'.join(errors[:40] + ['Last output:'] + lines[-60:])[-24000:]
+errors = list(dict.fromkeys(line for line in lines
+                           if 'error:' in line or line.startswith(('FAIL:', 'ERROR:'))))
+summary = '\n'.join(errors[:30] + ['Last output:'] + lines[-40:])[:24000]
 def escape(value):
     return value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
 print('::error title=' + escape(label) + '::' + escape(summary))

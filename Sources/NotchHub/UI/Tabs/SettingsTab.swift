@@ -18,7 +18,7 @@ struct SettingsTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            TabHeader("Настройки") {
+            TabHeader(title: "Настройки") {
                 if state.keepAwake.isActive {
                     Label("Не засыпает", systemImage: "cup.and.saucer.fill")
                         .font(.system(size: 11))
