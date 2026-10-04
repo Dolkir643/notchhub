@@ -7,15 +7,26 @@ DST="/Applications/NotchHub.app"
 STAGE="$(mktemp -d /Applications/.NotchHub-install.XXXXXX)"
 BACKUP="/Applications/NotchHub.previous.app"
 REPLACED=0
+wait_for_exit() {
+    # AppDelegate waits for snippet writes and up to 10 seconds for sleep restoration.
+    for attempt in {1..150}; do
+        pgrep -x NotchHub >/dev/null || return 0
+        sleep 0.1
+    done
+    ! pgrep -x NotchHub >/dev/null
+}
 cleanup() {
     result=$?
     if [ "$result" -ne 0 ] && [ "$REPLACED" = 1 ] && [ -d "$BACKUP" ]; then
         pkill -x NotchHub 2>/dev/null || true
-        sleep 1
-        rm -rf "$DST"
-        mv "$BACKUP" "$DST"
-        open "$DST" || true
-        echo "Восстановлена предыдущая версия." >&2
+        if wait_for_exit; then
+            rm -rf "$DST"
+            mv "$BACKUP" "$DST"
+            open "$DST" || true
+            echo "Восстановлена предыдущая версия." >&2
+        else
+            echo "NotchHub ещё сохраняет данные или восстанавливает сон. Автоматический откат остановлен; обе версии сохранены, предыдущая — $BACKUP." >&2
+        fi
     fi
     rm -rf "$STAGE"
 }
@@ -29,11 +40,7 @@ fi
 ditto "$SRC" "$STAGE/NotchHub.app"
 codesign --verify --deep --strict "$STAGE/NotchHub.app"
 pkill -x NotchHub 2>/dev/null || true
-for attempt in {1..50}; do
-    pgrep -x NotchHub >/dev/null || break
-    sleep 0.1
-done
-if pgrep -x NotchHub >/dev/null; then
+if ! wait_for_exit; then
     echo "Приложение ещё сохраняет данные. Установка остановлена; старая версия на месте." >&2
     exit 1
 fi
