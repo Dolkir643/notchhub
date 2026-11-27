@@ -21,10 +21,6 @@ struct ShelfItem: Identifiable, Codable, Equatable, Sendable {
         case id, name, size, added, relativePath, isScreenshot, pinned, isPinned
     }
 
-    var url: URL { AppPaths.shelf.appendingPathComponent(relativePath) }
-
-    /// Служебный каталог элемента (в нём лежит единственный файл).
-    var directory: URL { AppPaths.shelf.appendingPathComponent(id.uuidString, isDirectory: true) }
 }
 
 extension ShelfItem {
@@ -58,6 +54,7 @@ extension ShelfItem {
     @Published private(set) var screenshotStatus = "Скриншоты: подключение…"
     @Published private(set) var items: [ShelfItem] = []
     @Published private(set) var thumbnails: [UUID: NSImage] = [:]
+    @Published private(set) var retainedFolders = Set<String>()
     let downloads = ShelfDownloadsService()
 
     var isEmpty: Bool { items.isEmpty }
@@ -111,13 +108,14 @@ extension ShelfItem {
             // готовые каталоги, иначе поздняя копия осталась бы невидимой.
             for pending in pendingImports { _ = await pending.value }
             let result = await Task.detached(priority: .utility) {
-                Result { try store.loadRecovering() }
+                Result { try store.loadInventory() }
             }.value
             guard let self, self.running, self.generation == token else { return }
             switch result {
             case .success(let loaded):
                 self.ready = true
-                self.adopt(loaded, replacing: true)
+                self.retainedFolders = loaded.retainedFolders
+                self.adopt(loaded.items, replacing: true)
             case .failure(let error):
                 Log.shelf.error("Полка не загружена: \(error.localizedDescription, privacy: .public)")
                 AppState.shared.flash("Не удалось загрузить полку")
@@ -284,8 +282,7 @@ extension ShelfItem {
 
     func copyToClipboard(items: [ShelfItem]) {
         let ids = Set(items.map(\.id))
-        let urls = self.items.filter { ids.contains($0.id) }.map { store.url(for: $0) }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        let urls = self.items.filter { ids.contains($0.id) }.compactMap { fileURL(for: $0) }
         guard !urls.isEmpty else { return }
         NSPasteboard.general.clearContents()
         if NSPasteboard.general.writeObjects(urls.map { $0 as NSURL }) {
@@ -295,12 +292,28 @@ extension ShelfItem {
 
     /// Открыть в Finder.
     func reveal(_ item: ShelfItem) {
-        NSWorkspace.shared.activateFileViewerSelecting([item.url])
+        guard let url = fileURL(for: item) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     /// Открыть в программе по умолчанию.
     func open(_ item: ShelfItem) {
-        NSWorkspace.shared.open(item.url)
+        guard let url = fileURL(for: item) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func fileURL(for item: ShelfItem) -> URL? {
+        store.existingURL(for: item)
+    }
+
+    func revealRetainedFiles() {
+        let folders = retainedFolders.sorted().compactMap { store.folderWithRetainedFiles(named: $0) }
+        retainedFolders = Set(folders.map(\.lastPathComponent))
+        if folders.count == 1, let folder = folders.first {
+            NSWorkspace.shared.open(folder)
+        } else if !folders.isEmpty {
+            NSWorkspace.shared.activateFileViewerSelecting(folders)
+        }
     }
 
     // MARK: — превью
@@ -310,16 +323,16 @@ extension ShelfItem {
         guard thumbnails[item.id] == nil, !thumbnailsInFlight.contains(item.id) else { return }
         thumbnailsInFlight.insert(item.id)
 
-        let url = item.url
         let id = item.id
         Task { [weak self] in
             guard let self else { return }
+            defer { self.thumbnailsInFlight.remove(id) }
+            guard let url = self.fileURL(for: item) else { return }
             let generated = await self.thumbnailer.thumbnail(for: url,
                                                              size: Self.thumbnailSize,
                                                              scale: 2)
+            guard self.items.contains(where: { $0.id == id }), self.fileURL(for: item) == url else { return }
             let image = generated ?? ShelfThumbnailer.icon(for: url, size: CGSize(width: 64, height: 64))
-            self.thumbnailsInFlight.remove(id)
-            guard self.items.contains(where: { $0.id == id }) else { return }
             self.thumbnails[id] = image
         }
     }
@@ -352,17 +365,28 @@ extension ShelfItem {
     private func trash(_ requested: [ShelfItem]) {
         let removed = requested.filter { !removing.contains($0.id) }
         guard !removed.isEmpty else { return }
-        removing.formUnion(removed.map(\.id))
-        recycle(removed.map { store.url(for: $0) }) { [weak self] moved, error in
+        let targets = removed.compactMap { item -> (id: UUID, url: URL)? in
+            guard let url = fileURL(for: item) else { return nil }
+            return (item.id, url)
+        }
+        guard !targets.isEmpty else {
+            AppState.shared.flash("Файлы полки изменились. Удаление отменено")
+            return
+        }
+        removing.formUnion(targets.map(\.id))
+        recycle(targets.map(\.url)) { [weak self] moved, error in
             Task { @MainActor in
                 guard let self else { return }
-                let succeeded = removed.filter { moved[self.store.url(for: $0)] != nil }
+                let succeeded = targets.filter { moved[$0.url] != nil }
                 let ids = Set(succeeded.map(\.id))
-                self.removing.subtract(removed.map(\.id))
+                self.removing.subtract(targets.map(\.id))
                 self.items.removeAll { ids.contains($0.id) }
-                for item in succeeded {
-                    self.thumbnails[item.id] = nil
-                    self.store.delete(item)
+                for target in succeeded {
+                    self.thumbnails[target.id] = nil
+                    let name = target.url.deletingLastPathComponent().lastPathComponent
+                    if !self.store.removeEmptyFolder(named: name), self.store.folderWithRetainedFiles(named: name) != nil {
+                        self.retainedFolders.insert(name)
+                    }
                 }
                 self.store.save(self.items)
                 if error != nil || succeeded.count != removed.count {

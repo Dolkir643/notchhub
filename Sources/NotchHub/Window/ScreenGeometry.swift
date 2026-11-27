@@ -16,6 +16,37 @@ struct NotchGeometry: Equatable {
 
     /// Ширина «плеч» рядом с чёлкой (для псевдо-чёлки — вся строка меню).
     var menuBarHeight: CGFloat
+
+    /// По этой полосе у самой верхней кромки хаб можно открыть даже со скрытой подсказкой.
+    var fullScreenEdge: CGRect {
+        CGRect(x: screenFrame.midX - 100, y: screenFrame.maxY - 4, width: 200, height: 4)
+    }
+
+    /// Узкий участок сразу под физической камерой. Координаты — AppKit, снизу вверх.
+    var cameraHintTarget: CGRect {
+        CGRect(x: screenFrame.midX - 40, y: screenFrame.maxY - size.height - 6, width: 80, height: 6)
+    }
+
+    /// Прямой проход по вкладкам браузера под камерой не проявляет подсказку.
+    /// Уже проявленную можно достичь из выреза без мёртвой полосы между ними.
+    func showsCameraHint(at point: CGPoint, wasVisible: Bool) -> Bool {
+        let camera = CGRect(x: screenFrame.midX - size.width / 2, y: screenFrame.maxY - size.height,
+                            width: size.width, height: size.height)
+        return camera.containsIncludingEdges(point) || fullScreenEdge.containsIncludingEdges(point)
+            || (wasVisible && cameraHintTarget.containsIncludingEdges(point))
+    }
+
+    func hitsHiddenTrigger(at point: CGPoint, hintVisible: Bool) -> Bool {
+        fullScreenEdge.containsIncludingEdges(point)
+            || (isRealNotch && hintVisible && cameraHintTarget.containsIncludingEdges(point))
+    }
+}
+
+extension CGRect {
+    /// Упёртый в верх экрана курсор имеет y == maxY; CGRect.contains его исключает.
+    func containsIncludingEdges(_ point: CGPoint) -> Bool {
+        point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY
+    }
 }
 
 enum ScreenGeometry {

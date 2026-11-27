@@ -39,6 +39,8 @@ jobs:
           python3 --version
       - name: Test watchdog with simulated system commands
         run: python3 Tests/KeepAwakeWatchdogTests.py
+      - name: Check installation version guards
+        run: python3 Tests/InstallVersionTests.py
       - name: Run native macOS tests
         run: |
           # Avoid importing desktop screenshots into test shelves on this disposable runner.

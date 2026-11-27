@@ -17,7 +17,7 @@ import SwiftUI
     private var localClickMonitor: Any?
     private var keyMonitor: Any?
     private var pollTimer: Timer?
-    private var lastInsideKey: String?
+    private var lastInsideFrame: CGRect?
     private var lastPoint: CGPoint?
     private var rebuildTask: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
@@ -108,7 +108,7 @@ import SwiftUI
 
     var preferredScreenID: String? {
         let point = NSEvent.mouseLocation
-        return entries.first { contains($0.geometry.screenFrame, point) }
+        return entries.first { $0.geometry.screenFrame.containsIncludingEdges(point) }
             .map { NSStringFromRect($0.geometry.screenFrame) }
             ?? entries.first.map { NSStringFromRect($0.geometry.screenFrame) }
     }
@@ -155,7 +155,7 @@ import SwiftUI
                     guard let self else { return }
                     if event.type == .leftMouseDown, self.openFromEdge(at: NSEvent.mouseLocation) { return }
                     guard AppState.shared.isExpanded else { return }
-                    if self.zoneKey(for: NSEvent.mouseLocation) == nil {
+                    if self.hoverScreen(at: NSEvent.mouseLocation) == nil {
                         AppState.shared.collapse(immediate: true)
                     }
                 }
@@ -178,19 +178,18 @@ import SwiftUI
 
     @discardableResult
     private func openFromEdge(at point: CGPoint) -> Bool {
-        guard !AppState.shared.isExpanded,
-              entries.contains(where: { $0.geometry.usesEdgeTrigger
-                  && EdgeTrigger.contains(point, on: $0.geometry.screenFrame) }) else { return false }
-        AppState.shared.expand()
+        let state = AppState.shared
+        guard !state.isExpanded, let entry = entries.first(where: { entry in
+            let geo = entry.geometry
+            if geo.usesEdgeTrigger { return EdgeTrigger.contains(point, on: geo.screenFrame) }
+            return geo.isRealNotch && state.isHidden(on: geo.screenFrame)
+                && geo.hitsHiddenTrigger(at: point, hintVisible: state.edgeHintScreen == geo.screenFrame)
+        }) else { return false }
+        state.expand(screenID: NSStringFromRect(entry.geometry.screenFrame))
         updateHover()
         return true
     }
 
-    /// Ширина и высота полоски-триггера, заменяющей спрятанный островок.
-    /// Полоска низкая намеренно: у самой кромки курсор оказывается и по делу,
-    /// и проездом, а четыре точки ловят только упёртый в верх экрана курсор.
-    private static let stripHeight: CGFloat = 4
-    private static let stripWidth: CGFloat = 200
     /// Зона, в которой показывается язычок-подсказка.
     private static let hintHeight: CGFloat = 44
     private static let hintWidth: CGFloat = EdgeTrigger.width + 80
@@ -203,12 +202,6 @@ import SwiftUI
             let w = Theme.panelWidth + 12
             let h = geo.size.height + Theme.panelHeight + 12
             return CGRect(x: frame.midX - w / 2, y: frame.maxY - h, width: w, height: h)
-        }
-        if state.isHidden, FullScreenWatcher.shared.covers(frame) {
-            return CGRect(x: frame.midX - Self.stripWidth / 2,
-                          y: frame.maxY - Self.stripHeight,
-                          width: Self.stripWidth,
-                          height: Self.stripHeight)
         }
         return CGRect(x: frame.midX - geo.size.width / 2,
                       y: frame.maxY - geo.size.height,
@@ -226,41 +219,39 @@ import SwiftUI
                       height: Self.hintHeight)
     }
 
-    /// Попадание курсора в зону — с включённой верхней кромкой.
-    ///
-    /// Курсор, упёртый в самый верх экрана, имеет y ровно `screen.frame.maxY`,
-    /// а `CGRect.contains` верхнюю кромку своей не считает. Из-за этого островок
-    /// не раскрывался, пока мышь не опустят на точку ниже — то есть ровно в том
-    /// положении, куда курсор приходит естественнее всего.
-    private func contains(_ rect: CGRect, _ point: CGPoint) -> Bool {
-        point.x >= rect.minX && point.x <= rect.maxX
-            && point.y >= rect.minY && point.y <= rect.maxY
-    }
-
     /// Подсказка нужна на экранах без выреза и при скрытии настоящей чёлки
     /// поверх полноэкранного приложения.
     private func updateEdgeHint(at point: CGPoint) {
         let state = AppState.shared
         guard !state.isExpanded else {
-            state.setEdgeHint(false)
+            state.setEdgeHint(on: nil)
             return
         }
-        let near = entries.contains { entry in
-            let needsHint = entry.geometry.usesEdgeTrigger
-                || (state.isHidden && FullScreenWatcher.shared.covers(entry.geometry.screenFrame))
-            return needsHint && contains(hintRect(for: entry.geometry), point)
+        let near = entries.first { entry in
+            let geo = entry.geometry
+            if geo.isRealNotch && state.isHidden(on: geo.screenFrame) {
+                return geo.showsCameraHint(at: point, wasVisible: state.edgeHintScreen == geo.screenFrame)
+            }
+            return (geo.usesEdgeTrigger || state.isHidden(on: geo.screenFrame))
+                && hintRect(for: geo).containsIncludingEdges(point)
         }
-        state.setEdgeHint(near)
+        state.setEdgeHint(on: near?.geometry.screenFrame)
     }
 
-    /// Ключ экрана, в чью активную зону попал курсор, либо nil.
-    private func zoneKey(for point: CGPoint) -> String? {
-        for e in entries where contains(activeRect(for: e.geometry), point) {
-            if AppState.shared.isExpanded && !AppState.shared.isExpanded(on: e.geometry.screenFrame) { continue }
+    /// Экран, в чью активную зону попал курсор.
+    private func hoverScreen(at point: CGPoint) -> CGRect? {
+        let state = AppState.shared
+        for entry in entries {
+            let geo = entry.geometry
+            if state.isExpanded && !state.isExpanded(on: geo.screenFrame) { continue }
             // На экране без выреза наведение лишь показывает индикатор.
             // Клик и drag & drop обрабатывает компактная вью у самой кромки.
-            if e.geometry.usesEdgeTrigger && !AppState.shared.isExpanded { continue }
-            return NSStringFromRect(e.geometry.screenFrame)
+            if geo.usesEdgeTrigger && !state.isExpanded { continue }
+            if state.isHidden(on: geo.screenFrame) {
+                if geo.hitsHiddenTrigger(at: point, hintVisible: state.edgeHintScreen == geo.screenFrame) {
+                    return geo.screenFrame
+                }
+            } else if activeRect(for: geo).containsIncludingEdges(point) { return geo.screenFrame }
         }
         return nil
     }
@@ -268,9 +259,9 @@ import SwiftUI
     private func updateHover() {
         let point = NSEvent.mouseLocation
         updateEdgeHint(at: point)
-        let key = zoneKey(for: point)
+        let frame = hoverScreen(at: point)
 
-        if key != nil, key == lastInsideKey {
+        if frame != nil, frame == lastInsideFrame {
             // Курсор всё в той же зоне: важно только, сдвинулся ли он заметно.
             // Порог отсекает дрожание руки, из-за которого раскрытие
             // откладывалось бы бесконечно.
@@ -281,13 +272,13 @@ import SwiftUI
         }
 
         lastPoint = point
-        guard key != lastInsideKey else { return }
-        lastInsideKey = key
+        guard frame != lastInsideFrame else { return }
+        lastInsideFrame = frame
         // Уровень debug: в журнал попадает, только когда за ним следят
         // (`log stream --level debug`), в обычной работе не стоит ничего.
-        Log.window.debug("зона \(key == nil ? "покинута" : "занята", privacy: .public) в точке \(point.x, privacy: .public),\(point.y, privacy: .public)")
-        if key != nil {
-            AppState.shared.hoverBegan()
+        Log.window.debug("зона \(frame == nil ? "покинута" : "занята", privacy: .public) в точке \(point.x, privacy: .public),\(point.y, privacy: .public)")
+        if let frame {
+            AppState.shared.hoverBegan(on: frame)
         } else {
             AppState.shared.hoverEnded()
         }

@@ -51,6 +51,28 @@ struct KeepAwakeWatchdog {
     let deadline: Int
     let powerOnly: Bool
 
+    /// Shared by the app and the watchdog. pmset may omit an unset preference.
+    /// The root power domain reports the effective value once powerd applies it.
+    static let readSleepDisabled = #"""
+        settings=$(/usr/bin/pmset -g) || exit 1
+        saved=$(printf '%s\n' "$settings" | /usr/bin/awk '
+            /^Currently in use:$/ { complete = 1 }
+            $1 == "SleepDisabled" { count++; value = $2; if (NF != 2 || $2 !~ /^[01]$/) bad = 1 }
+            END { if (!complete || bad || count > 1) exit 1; if (count) print value }
+        ') || exit 1
+        domain=$(/usr/sbin/ioreg -r -n IOPMrootDomain -d 1) || exit 1
+        effective=$(printf '%s\n' "$domain" | /usr/bin/awk '
+            $1 == "\"SleepDisabled\"" {
+                count++
+                if (NF != 3 || $2 != "=" || $3 !~ /^(Yes|No)$/) bad = 1
+                value = ($3 == "Yes") ? 1 : 0
+            }
+            END { if (bad || count != 1) exit 1; print value }
+        ') || exit 1
+        [ -z "$saved" ] || [ "$saved" = "$effective" ] || exit 1
+        printf '%s\n' "$effective"
+        """#
+
     func script(now: Int) throws -> String {
         guard appPID > 1, leasePID > 1, appPID != leasePID,
               !appStarted.isEmpty, !leaseStarted.isEmpty,
@@ -85,8 +107,18 @@ struct KeepAwakeWatchdog {
             [ "$parent" = "$app" ] || return 1
             [ "$(/bin/date +%s)" -lt "$deadline" ]
         }
-        sleep_disabled() {
-            /usr/bin/pmset -g | /usr/bin/awk '$1 == "SleepDisabled" { print $2; exit }'
+        sleep_disabled() (
+            \(Self.readSleepDisabled)
+        )
+        wait_for_setting() {
+            checks=0
+            while [ "$checks" -lt 5 ]; do
+                [ "$(sleep_disabled)" = "$1" ] && return 0
+                if [ "$1" = 1 ]; then lease_valid || return 1; fi
+                checks=$((checks + 1))
+                if [ "$checks" -lt 5 ]; then /bin/sleep 1; fi
+            done
+            return 1
         }
         power_safe() {
             battery=$(/usr/bin/pmset -g batt) || return 1
@@ -122,7 +154,7 @@ struct KeepAwakeWatchdog {
             if [ "$owned" -eq 1 ]; then
                 attempt=0
                 while [ "$attempt" -lt 5 ]; do
-                    if /usr/bin/pmset disablesleep 0 && [ "$(sleep_disabled)" = 0 ]; then
+                    if /usr/bin/pmset disablesleep 0 && wait_for_setting 0; then
                         sleep_if_lid_requires_it
                         exit "$status"
                     fi
@@ -137,12 +169,13 @@ struct KeepAwakeWatchdog {
         trap 'exit 0' HUP INT TERM
         lease_valid && power_safe || { printf '%s\\n' 'NOTCHHUB_LEASE_ENDED' >&2; exit 70; }
         # Never claim or restore a setting that was already enabled externally.
-        [ "$(sleep_disabled)" = 0 ] || { printf '%s\\n' 'NOTCHHUB_PREEXISTING_SLEEP_OVERRIDE' >&2; exit 71; }
+        baseline=$(sleep_disabled) || { printf '%s\\n' 'NOTCHHUB_UNKNOWN_SLEEP_STATE' >&2; exit 74; }
+        [ "$baseline" = 0 ] || { printf '%s\\n' 'NOTCHHUB_PREEXISTING_SLEEP_OVERRIDE' >&2; exit 71; }
         lease_valid || { printf '%s\\n' 'NOTCHHUB_LEASE_ENDED' >&2; exit 70; }
         # Mark ownership before the mutation so interruption invokes restoration.
         owned=1
         /usr/bin/pmset disablesleep 1 || exit 72
-        [ "$(sleep_disabled)" = 1 ] || exit 72
+        wait_for_setting 1 || exit 72
         tick=0
         while lease_valid; do
             if [ "$tick" -eq 0 ]; then power_safe || break; fi

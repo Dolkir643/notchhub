@@ -121,7 +121,7 @@ enum KeepAwakeLidPhase: Equatable {
                 message = "Системный режим завершился."
             }
         case .failure:
-            if phase == .restoring {
+            if phase == .restoring, Date().timeIntervalSince(restoreStartedAt ?? Date()) > 10 {
                 message = "Не удалось проверить восстановление сна. Команда восстановления: sudo pmset disablesleep 0"
             }
         }
@@ -132,6 +132,12 @@ enum KeepAwakeLidPhase: Equatable {
         authorization = nil
         if let lease, lease.isRunning { lease.terminate() }
         lease = nil
+        if error.contains("NOTCHHUB_UNKNOWN_SLEEP_STATE") {
+            needsVerification = false
+            phase = .failed
+            message = "Не удалось подтвердить исходное состояние системного сна."
+            return
+        }
         if error.contains("NOTCHHUB_PREEXISTING_SLEEP_OVERRIDE") {
             needsVerification = false
             phase = .failed
@@ -163,16 +169,12 @@ enum KeepAwakeLidPhase: Equatable {
     }
 
     private nonisolated static func readSleepDisabled() throws -> Bool {
-        let text = try output("/usr/bin/pmset", ["-g"])
-        for line in text.split(separator: "\n") {
-            let fields = line.split(whereSeparator: \.isWhitespace)
-            if fields.count >= 2, fields[0] == "SleepDisabled" {
-                if fields[1] == "0" { return false }
-                if fields[1] == "1" { return true }
-            }
+        switch try output("/bin/sh", ["-c", KeepAwakeWatchdog.readSleepDisabled])
+            .trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "0": return false
+        case "1": return true
+        default: throw KeepAwakeFailure("macOS не сообщает текущее состояние системного сна.")
         }
-        // Missing/unknown state is not evidence that we can safely overwrite it.
-        throw KeepAwakeFailure("macOS не сообщает текущее состояние системного сна.")
     }
 
     private nonisolated static func output(_ path: String, _ arguments: [String]) throws -> String {

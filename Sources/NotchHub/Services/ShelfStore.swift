@@ -1,18 +1,56 @@
 import AppKit
+import Darwin
 
 /// Файловая часть полки: копирование в хранилище, индекс на диске, удаление.
 /// Класс без состояния — вызывается из фоновых задач, главный актор не блокирует.
 final class ShelfStore: Sendable {
     let shelfURL: URL
     let indexURL: URL
+    private let expectedShelfPath: String
 
     init(shelfURL: URL = AppPaths.shelf, indexURL: URL = AppPaths.shelfIndex) {
         self.shelfURL = shelfURL
         self.indexURL = indexURL
+        // Системные /var и /tmp могут быть ссылками. Сами NotchHub/ и Shelf/
+        // должны оставаться настоящими каталогами внутри их исходного родителя.
+        let parent = shelfURL.deletingLastPathComponent()
+        expectedShelfPath = parent.deletingLastPathComponent().resolvingSymlinksInPath()
+            .appendingPathComponent(parent.lastPathComponent)
+            .appendingPathComponent(shelfURL.lastPathComponent).path
     }
 
+    /// Только адрес из индекса. Для файловых действий нужен existingURL(for:).
     func url(for item: ShelfItem) -> URL {
         shelfURL.appendingPathComponent(item.relativePath)
+    }
+
+    private var hasSafeRoot: Bool {
+        shelfURL.resolvingSymlinksInPath().path == expectedShelfPath
+    }
+
+    private func fileType(at url: URL) -> FileAttributeType? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
+    }
+
+    private func existingFolder(named name: String) -> URL? {
+        guard UUID(uuidString: name) != nil, !name.utf8.contains(0), hasSafeRoot else { return nil }
+        let url = shelfURL.appendingPathComponent(name, isDirectory: true)
+        return fileType(at: url) == .typeDirectory ? url : nil
+    }
+
+    /// При каждом обращении проверяем оба компонента: карточка могла остаться
+    /// на экране после того, как файл или его каталог заменили ссылкой.
+    func existingURL(for item: ShelfItem) -> URL? {
+        let parts = item.relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, UUID(uuidString: String(parts[0])) == item.id,
+              !item.name.isEmpty, item.name != ".", item.name != "..",
+              !item.relativePath.utf8.contains(0), parts[1] == item.name,
+              existingFolder(named: String(parts[0])) != nil else { return nil }
+        let url = self.url(for: item)
+        switch fileType(at: url) {
+        case .typeRegular, .typeDirectory: return url
+        default: return nil
+        }
     }
 
     /// Приют для файлов, которые провайдер отдал не ссылкой, а содержимым:
@@ -31,7 +69,12 @@ final class ShelfStore: Sendable {
     /// Ошибка доступа не равна пустой полке. Повреждённый индекс сохраняем,
     /// а файлы без записи в индексе восстанавливаем (в том числе после сбоя копирования).
     func loadRecovering() throws -> [ShelfItem] {
+        try loadInventory().items
+    }
+
+    func loadInventory() throws -> (items: [ShelfItem], retainedFolders: Set<String>) {
         let fm = FileManager.default
+        guard hasSafeRoot else { throw CocoaError(.fileReadNoPermission) }
         var stored: [ShelfItem] = []
         if fm.fileExists(atPath: indexURL.path) {
             let data = try Data(contentsOf: indexURL)
@@ -45,25 +88,39 @@ final class ShelfStore: Sendable {
                 Log.shelf.error("Индекс повреждён; копия сохранена, восстанавливаю файлы")
             }
         }
-        stored = stored.filter { fm.fileExists(atPath: url(for: $0).path) }
+        stored = stored.filter { existingURL(for: $0) != nil }
         var known = Set(stored.map(\.id))
+        var retainedFolders = Set<String>()
         let folders = try fm.contentsOfDirectory(at: shelfURL, includingPropertiesForKeys: nil)
         for folder in folders {
-            guard let id = UUID(uuidString: folder.lastPathComponent), !known.contains(id) else { continue }
+            guard let id = UUID(uuidString: folder.lastPathComponent), !known.contains(id),
+                  fileType(at: folder) == .typeDirectory else { continue }
             let files = try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
                 .filter { $0.lastPathComponent != ".DS_Store" }
-            guard files.count == 1, let file = files.first else { continue }
-            stored.append(ShelfItem(id: id, name: file.lastPathComponent,
-                                    size: Self.size(of: file), added: Date(),
-                                    relativePath: "\(id.uuidString)/\(file.lastPathComponent)",
-                                    isScreenshot: false))
+            guard !files.isEmpty else { continue }
+            guard files.count == 1, let file = files.first else {
+                retainedFolders.insert(folder.lastPathComponent)
+                continue
+            }
+            // Потерянный индекс мог содержать закрепление. Единственный файл
+            // также мог быть оставлен редактором рядом с уже удалённой карточкой.
+            var recovered = ShelfItem(id: id, name: file.lastPathComponent, size: 0, added: Date(),
+                                      relativePath: "\(folder.lastPathComponent)/\(file.lastPathComponent)",
+                                      isScreenshot: false, pinned: true)
+            guard let url = existingURL(for: recovered) else {
+                retainedFolders.insert(folder.lastPathComponent)
+                continue
+            }
+            recovered.size = Self.size(of: url)
+            stored.append(recovered)
             known.insert(id)
         }
-        return stored
+        return (stored, retainedFolders)
     }
 
     @discardableResult
     func save(_ items: [ShelfItem]) -> Bool {
+        guard hasSafeRoot else { return false }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -79,13 +136,11 @@ final class ShelfStore: Sendable {
 
     /// Убирать можно только пустые каталоги: файлы без индекса подлежат восстановлению.
     func pruneOrphans(keeping items: [ShelfItem]) {
-        let alive = Set(items.map(\.id.uuidString))
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: shelfURL.path) else { return }
-        for name in names where UUID(uuidString: name) != nil && !alive.contains(name) {
-            let folder = shelfURL.appendingPathComponent(name, isDirectory: true)
-            guard let contents = try? FileManager.default.contentsOfDirectory(atPath: folder.path),
-                  contents.isEmpty else { continue }
-            try? FileManager.default.removeItem(at: folder)
+        let alive = Set(items.map(\.id))
+        guard hasSafeRoot, let names = try? FileManager.default.contentsOfDirectory(atPath: shelfURL.path) else { return }
+        for name in names {
+            guard let id = UUID(uuidString: name), !alive.contains(id) else { continue }
+            removeEmptyFolder(named: name)
         }
     }
 
@@ -93,6 +148,7 @@ final class ShelfStore: Sendable {
 
     /// Копия файла в `Shelf/<UUID>/<имя>`. Папка на элемент — чтобы не бились одинаковые имена.
     func copyIn(_ source: URL, isScreenshot: Bool) -> ShelfItem? {
+        guard hasSafeRoot else { return nil }
         let origin = source.resolvingSymlinksInPath()
         let name = origin.lastPathComponent.isEmpty ? "Файл" : origin.lastPathComponent
         let id = UUID()
@@ -161,9 +217,22 @@ final class ShelfStore: Sendable {
 
     // MARK: — удаление
 
-    /// Каталог элемента (вместе с файлом).
-    func delete(_ item: ShelfItem) {
-        try? FileManager.default.removeItem(at: shelfURL.appendingPathComponent(item.id.uuidString, isDirectory: true))
+    /// rmdir атомарно откажется удалять непустой каталог, включая файлы,
+    /// появившиеся во время асинхронного перемещения карточки в Корзину.
+    @discardableResult
+    func removeEmptyFolder(named name: String) -> Bool {
+        guard UUID(uuidString: name) != nil, !name.utf8.contains(0), hasSafeRoot else { return false }
+        let root = open(expectedShelfPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard root >= 0 else { return false }
+        defer { close(root) }
+        return unlinkat(root, name, AT_REMOVEDIR) == 0
+    }
+
+    func folderWithRetainedFiles(named name: String) -> URL? {
+        guard let folder = existingFolder(named: name),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path),
+              names.contains(where: { $0 != ".DS_Store" }) else { return nil }
+        return folder
     }
 
     // MARK: — размер

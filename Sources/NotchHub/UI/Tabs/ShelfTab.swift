@@ -14,6 +14,12 @@ struct ShelfTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             TabHeader(title: "Полка") {
+                if selection.page == .saved, !shelf.retainedFolders.isEmpty {
+                    Button("Файлы рядом", action: shelf.revealRetainedFiles)
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .help("Показать в Finder дополнительные файлы, оставшиеся рядом с копиями Полки")
+                }
                 if selection.page == .saved, !selectedItems.isEmpty {
                     Button("Удалить (\(selectedItems.count))") { delete(selectedItems) }
                         .buttonStyle(.plain)
@@ -138,16 +144,18 @@ struct ShelfTab: View {
                   },
                   onOpen: { actionItems(for: item).forEach { shelf.open($0) } },
                   onReveal: {
-                      NSWorkspace.shared.activateFileViewerSelecting(actionItems(for: item).map(\.url))
+                      let urls = actionItems(for: item).compactMap { shelf.fileURL(for: $0) }
+                      if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
                   },
                   onDelete: { delete(actionItems(for: item)) },
                   onDeleteSingle: { delete([item]) },
                   onPin: { togglePin(actionItems(for: item)) },
-                  onPreview: { ShelfPreview.shared.show(actionItems(for: item).map(\.url)) },
+                  onPreview: { ShelfPreview.shared.show(actionItems(for: item).compactMap { shelf.fileURL(for: $0) }) },
                   onCopy: { shelf.copyToClipboard(items: actionItems(for: item)) },
                   files: {
-                      actionItems(for: item).map {
-                          ShelfDragFile(url: $0.url, preview: shelf.thumbnails[$0.id])
+                      actionItems(for: item).compactMap { selected in
+                          guard let url = shelf.fileURL(for: selected) else { return nil }
+                          return ShelfDragFile(url: url, preview: shelf.thumbnails[selected.id])
                       }
                   },
                   pinTitle: {
@@ -250,7 +258,8 @@ struct ShelfTab: View {
                         swallowed = true
                     case 49:        // пробел — системный Quick Look
                         guard !shown.isEmpty else { return }
-                        ShelfPreview.shared.show((items.isEmpty ? Array(shown.prefix(1)) : items).map(\.url))
+                        let targets = items.isEmpty ? Array(shown.prefix(1)) : items
+                        ShelfPreview.shared.show(targets.compactMap { shelf.fileURL(for: $0) })
                         swallowed = true
                     default:
                         break
@@ -319,9 +328,7 @@ private struct ShelfCard: View {
     }
 
     private var dragArea: some View {
-        ShelfDragArea(url: item.url,
-                      preview: image,
-                      deleteCornerActive: hovering || selected,
+        ShelfDragArea(deleteCornerActive: hovering || selected,
                       onHover: { hovering = $0 },
                       onClick: { onSelect([], false) },
                       onOpen: onOpen,

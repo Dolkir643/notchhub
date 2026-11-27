@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/build/NotchHub.app"
 DST="/Applications/NotchHub.app"
+/usr/bin/python3 "$ROOT/Scripts/check-install-version.py" "$ROOT/Resources/Info.plist" "$DST"
+LOCK="$(getconf DARWIN_USER_TEMP_DIR)/name.notchhub.install.lock"
+/usr/bin/shlock -p "$$" -f "$LOCK" || { echo "Другой процесс уже обновляет NotchHub." >&2; exit 1; }
+trap 'rm -f "$LOCK"' EXIT
 STAGE="$(mktemp -d /Applications/.NotchHub-install.XXXXXX)"
 BACKUP="/Applications/NotchHub.previous.app"
 REPLACED=0
@@ -29,6 +33,7 @@ cleanup() {
         fi
     fi
     rm -rf "$STAGE"
+    rm -f "$LOCK"
 }
 trap cleanup EXIT
 # Сохраняем профиль уже установленного приложения, если не задан явно.
@@ -39,6 +44,7 @@ fi
 "$ROOT/Scripts/build.sh"
 ditto "$SRC" "$STAGE/NotchHub.app"
 codesign --verify --deep --strict "$STAGE/NotchHub.app"
+/usr/bin/python3 "$ROOT/Scripts/check-install-version.py" "$STAGE/NotchHub.app/Contents/Info.plist" "$DST"
 pkill -x NotchHub 2>/dev/null || true
 if ! wait_for_exit; then
     echo "Приложение ещё сохраняет данные. Установка остановлена; старая версия на месте." >&2
@@ -53,5 +59,9 @@ mv "$STAGE/NotchHub.app" "$DST"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DST" 2>/dev/null || true
 open "$DST"
 sleep 3
-pgrep -x NotchHub >/dev/null || { echo "Новая версия не запустилась." >&2; exit 1; }
+running_pid="$(pgrep -x NotchHub || true)"
+if [ -z "$running_pid" ] || [ "$(ps -p "$running_pid" -o comm=)" != "$DST/Contents/MacOS/NotchHub" ]; then
+    echo "Запуск установленной копии не подтверждён." >&2
+    exit 1
+fi
 echo "Установлено: $DST. Предыдущая версия: $BACKUP"

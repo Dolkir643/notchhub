@@ -10,8 +10,6 @@ struct ShelfDragFile {
 /// вытаскивание файла наружу. SwiftUI `.draggable` для файлов на macOS
 /// срабатывает через раз, поэтому всё держим на AppKit.
 struct ShelfDragArea: NSViewRepresentable {
-    let url: URL
-    let preview: NSImage?
     /// Показан ли крестик удаления: только тогда угол карточки работает на удаление.
     let deleteCornerActive: Bool
     let onHover: (Bool) -> Void
@@ -25,7 +23,7 @@ struct ShelfDragArea: NSViewRepresentable {
     var onPin: (() -> Void)? = nil
     var onPreview: (() -> Void)? = nil
     var pinTitle: (() -> String)? = nil
-    var files: (() -> [ShelfDragFile])? = nil
+    let files: () -> [ShelfDragFile]
     var canDelete = true
 
     func makeNSView(context: Context) -> ShelfDragSourceView {
@@ -57,8 +55,6 @@ struct ShelfDragArea: NSViewRepresentable {
     }
 
     private func apply(to view: ShelfDragSourceView) {
-        view.url = url
-        view.preview = preview
         view.deleteCornerActive = deleteCornerActive && canDelete
         view.canDelete = canDelete
         view.onHover = onHover
@@ -80,8 +76,6 @@ struct ShelfDragArea: NSViewRepresentable {
 /// поэтому он же отвечает за наведение и за крестик в углу.
 final class ShelfDragSourceView: NSView, NSDraggingSource, NSSharingServicePickerDelegate,
                                  NSSharingServiceDelegate, NSMenuDelegate {
-    var url: URL?
-    var preview: NSImage?
     var deleteCornerActive = false
     var onHover: ((Bool) -> Void)?
     var onClick: (() -> Void)?
@@ -167,7 +161,7 @@ final class ShelfDragSourceView: NSView, NSDraggingSource, NSSharingServicePicke
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard !dragging, !pressedDeleteCorner, let start = pressPoint, url != nil else { return }
+        guard !dragging, !pressedDeleteCorner, let start = pressPoint else { return }
         let point = event.locationInWindow
         guard hypot(point.x - start.x, point.y - start.y) > 3 else { return }
         select(modifiers: pressModifiers, preservingGroup: true)
@@ -190,7 +184,6 @@ final class ShelfDragSourceView: NSView, NSDraggingSource, NSSharingServicePicke
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard url != nil else { return nil }
         window?.makeKey()
         window?.makeFirstResponder(self)
         select(modifiers: [], preservingGroup: true)
@@ -249,9 +242,7 @@ final class ShelfDragSourceView: NSView, NSDraggingSource, NSSharingServicePicke
     }
 
     private var currentFiles: [ShelfDragFile] {
-        if let files { return files() }
-        guard let url else { return [] }
-        return [ShelfDragFile(url: url, preview: preview)]
+        files?() ?? []
     }
 
     /// Системный список сервисов привязан к реальной карточке AppKit.

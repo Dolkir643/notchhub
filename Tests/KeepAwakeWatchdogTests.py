@@ -42,11 +42,20 @@ elif command == 'date':
 elif command == 'sleep':
     state['tick'] += int(args[0])
 elif command == 'ioreg':
+    if state['tick'] >= state.get('effective_at', 0):
+        state['effective'] = state.get('pending', state['effective'])
+    value = 'Yes' if state['effective'] else 'No'
+    print(state.get('registry_field', '  "SleepDisabled" = ' + value))
     print('  "AppleClamshellState" = ' + state['closed'])
     print('  "AppleClamshellCausesSleep" = ' + state['causes'])
+    status = state.get('registry_error', 0)
 elif command == 'pmset':
     if args == ['-g']:
-        print('SleepDisabled ' + str(state['disabled']))
+        print('System-wide power settings:')
+        print(state.get('settings_field', 'SleepDisabled ' + str(state['disabled'])))
+        if not state.get('truncated'):
+            print('Currently in use:')
+        status = state.get('settings_error', 0)
     elif args == ['-g', 'batt']:
         print("Now drawing from '" + state['power'] + "'")
         print(' -InternalBattery-0 (id=1)\t' + str(state['percent']) +
@@ -61,6 +70,8 @@ elif command == 'pmset':
             status = 1
         else:
             state['disabled'] = value
+            state['pending'] = value
+            state['effective_at'] = state['tick'] + state.get('delay', 0)
     elif args == ['sleepnow']:
         state['sleepnow'] += 1
     else:
@@ -75,21 +86,14 @@ sys.exit(status)
 def production_script():
     source = (Path(__file__).resolve().parents[1] /
               'Sources/NotchHub/Services/KeepAwakePolicy.swift').read_text()
-    # Extract only the literal from KeepAwakeWatchdog.script, not AppleScript.
-    source = source.split('func script(now: Int)', 1)[1]
-    body = source.split('        return """\n', 1)[1].split('        """', 1)[0]
-    body = '\n'.join(line[8:] if line.startswith('        ') else line
-                     for line in body.splitlines())
-    for old, new in [
-        (r'\(appPID)', '22'), (r'\(leasePID)', '23'),
-        (r'\(appStarted)', 'Sun Oct 4 12:00:00 2026'),
-        (r'\(leaseStarted)', 'Sun Oct 4 12:00:00 2026'),
-        (r'\(deadline)', '1030'), (r'\(powerOnly ? 1 : 0)', '0'),
-    ]:
-        body = body.replace(old, new)
-    if re.search(r'(?<!\\)\\\(', body):
-        raise AssertionError('New Swift interpolation must be handled explicitly')
-    return body.replace('\\\\', '\\') + '\n'
+    # Render exactly what Swift embeds, including the shared read-only probe.
+    source += '''
+let birth = "Sun Oct 4 12:00:00 2026"
+print(try KeepAwakeWatchdog(appPID: 22, leasePID: 23, appStarted: birth,
+    leaseStarted: birth, deadline: 1030, powerOnly: false).script(now: 1000))
+'''
+    return subprocess.run(['/usr/bin/xcrun', 'swift', '-'], input=source,
+                          capture_output=True, text=True, check=True).stdout
 
 
 class WatchdogTests(unittest.TestCase):
@@ -137,6 +141,7 @@ class WatchdogTests(unittest.TestCase):
                      writes=[], sleepnow=0, fail_restore=False,
                      app_replaced=False, lease_parent='22')
         state.update(changes)
+        state.setdefault('effective', state['disabled'])
         (self.root / 'state.json').write_text(json.dumps(state))
         result = subprocess.run(['/bin/sh', str(self.script)],
                                 capture_output=True, text=True, timeout=20)
@@ -154,6 +159,33 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(state['writes'], [])
         self.assertEqual(state['disabled'], 1)
         self.assertIn('NOTCHHUB_PREEXISTING_SLEEP_OVERRIDE', result.stderr)
+
+    def test_absent_preference_uses_explicit_registry_boolean(self):
+        for disabled in (0, 1):
+            with self.subTest(disabled=disabled):
+                state, result = self.run_watchdog(settings_field='', disabled=disabled)
+                self.assertEqual(result.returncode, 71 if disabled else 0)
+                self.assertEqual(state['writes'], [] if disabled else [1, 0])
+
+    def test_uncertain_baseline_never_writes(self):
+        for changes in [dict(effective=1), dict(disabled=1, effective=0),
+                        dict(settings_field='', registry_field=''),
+                        dict(settings_field='SleepDisabled 2'),
+                        dict(settings_field='SleepDisabled 0\nSleepDisabled 0'),
+                        dict(registry_field='"SleepDisabled" = Unknown'),
+                        dict(registry_field='"SleepDisabled" = No\n"SleepDisabled" = No'),
+                        dict(settings_error=1), dict(registry_error=1), dict(truncated=True)]:
+            with self.subTest(changes=changes):
+                state, result = self.run_watchdog(**changes)
+                self.assertEqual(state['writes'], [])
+                self.assertIn('NOTCHHUB_UNKNOWN_SLEEP_STATE', result.stderr)
+
+    def test_kernel_can_apply_both_writes_asynchronously(self):
+        state, result = self.run_watchdog(delay=2, lease_ends=4, closed='Yes')
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(state['writes'], [1, 0])
+        self.assertEqual(state['effective'], 0)
+        self.assertEqual(state['sleepnow'], 1)
 
     def test_authorization_accepted_after_cancel_does_nothing(self):
         state, result = self.run_watchdog(lease_ends=0)

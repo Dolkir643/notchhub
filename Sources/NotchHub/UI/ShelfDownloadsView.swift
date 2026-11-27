@@ -130,9 +130,7 @@ struct ShelfDownloadsView: View {
     @ViewBuilder private func dragArea(_ item: ShelfDownload) -> some View {
         if item.isReady {
             let access = downloads.transferAccess
-            ShelfDragArea(url: item.url,
-                          preview: NSWorkspace.shared.icon(forFile: item.url.path),
-                          deleteCornerActive: false,
+            ShelfDragArea(deleteCornerActive: false,
                           onHover: { _ in },
                           onClick: {},
                           onOpen: { NSWorkspace.shared.open(item.url) },

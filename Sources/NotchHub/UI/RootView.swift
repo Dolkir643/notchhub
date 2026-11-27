@@ -16,8 +16,9 @@ struct RootView: View {
     /// Островок спрятан: под ним полноэкранное приложение на этом же экране.
     /// Проверяем именно свой экран — на втором мониторе островок остаётся.
     private var hidden: Bool {
-        state.settings.hideInFullScreen && !open && state.fullScreen.covers(geometry.screenFrame)
+        state.isHidden(on: geometry.screenFrame)
     }
+    private var showsEdgeHint: Bool { state.edgeHintScreen == geometry.screenFrame }
 
     private var contentWidth: CGFloat { open ? Theme.panelWidth : geometry.size.width }
     private var contentHeight: CGFloat { open ? notchHeight + Theme.panelHeight : notchHeight }
@@ -38,8 +39,11 @@ struct RootView: View {
             if geometry.usesEdgeTrigger && !open {
                 compactTrigger
             } else {
-                notch
-                    .padding(.top, geometry.usesEdgeTrigger ? EdgeTrigger.overshoot : 0)
+                ZStack(alignment: .top) {
+                    notch
+                    if hidden && geometry.isRealNotch { cameraTrigger }
+                }
+                .padding(.top, geometry.usesEdgeTrigger ? EdgeTrigger.overshoot : 0)
             }
             Spacer(minLength: 0)
         }
@@ -50,23 +54,15 @@ struct RootView: View {
     /// На экране без выреза строка меню принадлежит активному приложению.
     /// Широкая зона у кромки удобна для клика и приёма файлов; меню ниже неё доступно.
     private var compactTrigger: some View {
-        Capsule()
-            .fill(Color.white.opacity(state.showsEdgeHint ? 0.55 : 0))
-            .frame(width: 120, height: 3)
-            .padding(.top, EdgeTrigger.overshoot)
-            .frame(width: EdgeTrigger.width, height: EdgeTrigger.height + EdgeTrigger.overshoot, alignment: .top)
-            .background(Color.black.opacity(0.001))
-            .contentShape(Rectangle())
-            .onTapGesture { state.expand(screenID: NSStringFromRect(geometry.screenFrame)) }
-            .onDrop(of: [.fileURL, .item], isTargeted: Binding(
-                get: { state.isDropTargeted },
-                set: { targeted in
-                    if targeted { state.dropEntered() } else { state.dropExited() }
-                })) { providers in
-                    state.shelf.handleDrop(providers)
-                }
-            .animation(Theme.quick, value: state.showsEdgeHint)
-            .accessibilityLabel("Открыть NotchHub")
+        openTrigger {
+            Capsule()
+                .fill(Color.white.opacity(showsEdgeHint ? 0.55 : 0))
+                .frame(width: 120, height: 3)
+                .padding(.top, EdgeTrigger.overshoot)
+                .frame(width: EdgeTrigger.width, height: EdgeTrigger.height + EdgeTrigger.overshoot, alignment: .top)
+                .background(Color.black.opacity(0.001))
+        }
+        .animation(Theme.quick, value: showsEdgeHint)
     }
 
     private var notch: some View {
@@ -91,16 +87,46 @@ struct RootView: View {
         // Спрятанный островок именно гаснет, а не исчезает из иерархии:
         // подмена вью дала бы собственный переход поверх пружины раскрытия.
         // Клики он в этом виде не ловит — их принимает язычок.
-        .opacity(hidden ? 0 : 1)
-        .allowsHitTesting(!hidden)
-        .animation(Theme.quick, value: hidden)
-        // Значением, а не замыканием: `overlay(alignment:content:)` пришёл
-        // только в macOS 12, а сборка для Big Sur обязана компилироваться.
-        .overlay(edgeHint, alignment: .top)
         .contentShape(shape)
         // Клик раскрывает только свёрнутый островок: тап по пустому месту
         // раскрытой панели не должен её захлопывать — это делает клик ВНЕ панели.
         .onTapGesture { if !open { state.expand(screenID: NSStringFromRect(geometry.screenFrame)) } }
+        .opacity(hidden ? 0 : 1)
+        .allowsHitTesting(!hidden)
+        .animation(Theme.quick, value: hidden)
+        .overlay(edgeHint, alignment: .top)
+    }
+
+    /// У выреза остаётся прежний вход у самой верхней кромки. Нижний приёмник
+    /// существует только после захода курсора в вырез. Его отступ — пустой,
+    /// поэтому окно не ловит клики на прямоугольнике между полосами.
+    @ViewBuilder private var cameraTrigger: some View {
+        let edge = geometry.fullScreenEdge
+        let target = geometry.cameraHintTarget
+        ZStack(alignment: .top) {
+            openTrigger {
+                Color.black.opacity(0.005).frame(width: edge.width, height: edge.height)
+            }
+            .accessibilityHidden(showsEdgeHint)
+            if showsEdgeHint {
+                openTrigger {
+                    Capsule()
+                        .fill(Color.white.opacity(0.85))
+                        .frame(width: 64, height: 3)
+                        .overlay(Capsule().strokeBorder(Color.black.opacity(0.45), lineWidth: 0.5))
+                        .frame(width: target.width, height: target.height)
+                        .background(Color.black.opacity(0.005))
+                }
+                .padding(.top, geometry.screenFrame.maxY - target.maxY)
+                .transition(.identity)
+            }
+        }
+    }
+
+    private func openTrigger<Content: View>(@ViewBuilder _ label: () -> Content) -> some View {
+        fileDropTarget(label().contentShape(Rectangle())
+            .onTapGesture { state.expand(screenID: NSStringFromRect(geometry.screenFrame)) })
+            .accessibilityLabel("Открыть NotchHub")
     }
 
     /// Язычок у верхней кромки: единственное, что остаётся от островка,
@@ -108,14 +134,14 @@ struct RootView: View {
     /// близко, и отвечает на клик — иначе спрятанный хаб нечем было бы открыть,
     /// кроме горячей клавиши.
     @ViewBuilder private var edgeHint: some View {
-        if hidden {
+        if hidden && !geometry.isRealNotch {
             Capsule()
-                .fill(Color.white.opacity(state.showsEdgeHint ? 0.35 : 0))
+                .fill(Color.white.opacity(showsEdgeHint ? 0.35 : 0))
                 .frame(width: 64, height: 3)
                 .padding(.top, 1)
                 .contentShape(Rectangle().size(width: 120, height: 8))
                 .onTapGesture { state.expand(screenID: NSStringFromRect(geometry.screenFrame)) }
-                .animation(Theme.quick, value: state.showsEdgeHint)
+                .animation(Theme.quick, value: showsEdgeHint)
         }
     }
 
@@ -161,15 +187,27 @@ struct RootView: View {
     /// больше некому (вкладка покрывает только область ниже). Полоса высотой
     /// в вырез ничего не перекрывает: содержимое панели начинается под ней.
     private var dropCatcher: some View {
-        Color.black.opacity(0.001)
-            .frame(width: contentWidth, height: max(notchHeight, 22))
-            .onDrop(of: [.fileURL, .item], isTargeted: Binding(
-                get: { state.isDropTargeted },
-                set: { targeted in
-                    if targeted { state.dropEntered() } else { state.dropExited() }
-                })) { providers in
-                    state.shelf.handleDrop(providers)
-                }
+        VStack(spacing: 0) {
+            fileDropTarget(Color.black.opacity(0.001)
+                .frame(width: contentWidth, height: max(notchHeight, 22)))
+            // После раскрытия на dropEntered курсор может остаться там, где была
+            // подсказка, выше контента «Полки». Отпускание здесь тоже принимает файл.
+            if open && geometry.isRealNotch && state.settings.hideInFullScreen
+                && state.fullScreen.covers(geometry.screenFrame) {
+                let target = geometry.cameraHintTarget
+                fileDropTarget(Color.black.opacity(0.005).frame(width: target.width, height: target.height))
+            }
+        }
+    }
+
+    private func fileDropTarget<Content: View>(_ content: Content) -> some View {
+        content.onDrop(of: [.fileURL, .item], isTargeted: Binding(
+            get: { state.isDropTargeted },
+            set: { targeted in
+                if targeted { state.dropEntered(on: geometry.screenFrame) } else { state.dropExited() }
+            })) { providers in
+                state.shelf.handleDrop(providers)
+            }
     }
 
     /// Короткое подтверждение — только внутри раскрытой панели.
